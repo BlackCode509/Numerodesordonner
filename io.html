@@ -1,0 +1,2467 @@
+<!DOCTYPE html>
+<html lang="en" style="height: 100%; overscroll-behavior: contain; --p1-color: #4F46E5; --p1-cube-bg: #FFFFFF; --p2-color: #E11D48; --p2-cube-bg: #FFFFFF; --slot-bg: #F1F5F9;"><head>
+<script>
+(function() {
+  // Function to set or update viewport meta tag
+  function ensureViewportMeta() {
+    var viewportMeta = document.querySelector('meta[name="viewport"]');
+    
+    if (!viewportMeta) {
+      // Create viewport meta tag if it doesn't exist
+      viewportMeta = document.createElement('meta');
+      viewportMeta.name = 'viewport';
+      document.head.insertBefore(viewportMeta, document.head.firstChild);
+    }
+    
+    // Set viewport to prevent iOS auto-zoom
+    // width=device-width: Use device width
+    // initial-scale=1.0: Initial zoom level
+    // maximum-scale=1.0: Prevent zooming beyond 1.0
+    // user-scalable=no: Disable user scaling (prevents pinch zoom and auto-zoom on input focus)
+    viewportMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+  }
+  
+  // Run immediately if DOM is already ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', ensureViewportMeta);
+  } else {
+    ensureViewportMeta();
+  }
+  
+  // Also ensure it's set when head is ready (in case script runs before head)
+  if (!document.head) {
+    var observer = new MutationObserver(function(mutations) {
+      if (document.head) {
+        ensureViewportMeta();
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.documentElement, { childList: true });
+  }
+})();
+</script>
+
+<script>
+(function() {
+  // Store original addEventListener/removeEventListener
+  var originalAddEventListener = EventTarget.prototype.addEventListener;
+  var originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+  
+  // Map to track click->pointerup conversions: element -> Map(clickListener -> pointerupListener)
+  var listenerMap = new WeakMap();
+  
+  // Patch addEventListener
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    // Convert click to pointerup for better iOS compatibility
+    if (type === 'click' && typeof listener === 'function') {
+      // Get or create listener map for this element
+      var elementMap = listenerMap.get(this);
+      if (!elementMap) {
+        elementMap = new Map();
+        listenerMap.set(this, elementMap);
+      }
+      
+      // Check if we already converted this listener
+      var existingPointerListener = elementMap.get(listener);
+      if (existingPointerListener) {
+        // Already converted, use the existing pointerup listener
+        return originalAddEventListener.call(this, 'pointerup', existingPointerListener, options);
+      }
+      
+      // Create wrapper that converts pointerup to click-like event
+      var pointerupListener = function(e) {
+        // Only handle primary button (left click / tap)
+        if (e.button !== 0) return;
+        
+        // Create a click-like event object for compatibility
+        var clickEvent = new MouseEvent('click', {
+          bubbles: e.bubbles,
+          cancelable: e.cancelable,
+          view: e.view,
+          detail: 1,
+          screenX: e.screenX,
+          screenY: e.screenY,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          ctrlKey: e.ctrlKey,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          metaKey: e.metaKey,
+          button: e.button,
+          relatedTarget: e.relatedTarget
+        });
+        
+        // Copy additional properties
+        Object.defineProperty(clickEvent, 'target', { value: e.target, enumerable: true });
+        Object.defineProperty(clickEvent, 'currentTarget', { value: e.currentTarget, enumerable: true });
+        
+        // Call the original click listener with click-like event
+        try {
+          listener.call(this, clickEvent);
+        } catch (err) {
+          // Log but don't break if listener throws
+          console.error('[Sekai Click Patch] Listener error:', err);
+        }
+      };
+      
+      // Store the conversion for removeEventListener
+      elementMap.set(listener, pointerupListener);
+      
+      // Add as pointerup instead of click
+      return originalAddEventListener.call(this, 'pointerup', pointerupListener, options);
+    }
+    
+    // For all other event types, use original
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+  
+  // Patch removeEventListener
+  EventTarget.prototype.removeEventListener = function(type, listener, options) {
+    if (type === 'click' && typeof listener === 'function') {
+      var elementMap = listenerMap.get(this);
+      if (elementMap) {
+        var pointerupListener = elementMap.get(listener);
+        if (pointerupListener) {
+          elementMap.delete(listener);
+          return originalRemoveEventListener.call(this, 'pointerup', pointerupListener, options);
+        }
+      }
+    }
+    
+    return originalRemoveEventListener.call(this, type, listener, options);
+  };
+  
+  console.log('[Sekai Click Patch] Installed - click events will use pointerup');
+})();
+</script>
+
+<script>
+(function() {
+  // Track recent touch to block emulated mouse events
+  var lastTouchTime = 0;
+  var TOUCH_MOUSE_DELAY = 200; // ms to block mouse events after touch
+
+  // Global touch tracker - set flag when touch occurs
+  document.addEventListener('touchstart', function() {
+    lastTouchTime = Date.now();
+  }, { passive: true, capture: true });
+
+  document.addEventListener('touchend', function() {
+    lastTouchTime = Date.now();
+  }, { passive: true, capture: true });
+
+  // Block emulated mouse events that follow touch
+  // BUT allow them on focusable elements (inputs need mousedown for focus)
+  function blockEmulatedMouseHandler(e) {
+    if (Date.now() - lastTouchTime < TOUCH_MOUSE_DELAY) {
+      // Don't block on focusable elements - they need mousedown for focus
+      var target = e.target;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return; // Allow the event
+      }
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }
+
+  // Capture phase blockers for emulated mouse events
+  document.addEventListener('mousedown', blockEmulatedMouseHandler, { capture: true });
+
+  // Patch addEventListener to force passive on touch events
+  var originalAddEventListener = EventTarget.prototype.addEventListener;
+
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    // Convert touchstart/touchmove to passive
+    // Mouse event emulation is handled by our global blockers above
+    if (type === 'touchstart' || type === 'touchmove') {
+      var newOptions = Object.assign({}, options || {}, { passive: true });
+      return originalAddEventListener.call(this, type, listener, newOptions);
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+})();
+</script>
+
+<script>
+(function() {
+  // Track if dom_ready was already sent
+  var domReadySent = false;
+
+  function sendDomReady() {
+    if (domReadySent) return;
+    domReadySent = true;
+    window.parent.postMessage({ type: 'sekai_iframe_dom_ready' }, '*');
+  }
+
+  // Send dom_ready when DOMContentLoaded fires
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', sendDomReady);
+  } else {
+    // DOM already loaded
+    sendDomReady();
+  }
+
+  // Helper to serialize message - handles objects that would become [object Object]
+  function serializeMessage(msg) {
+    if (msg === null || msg === undefined) return '';
+    if (typeof msg === 'string') return msg;
+    if (typeof msg === 'object') {
+      try {
+        return JSON.stringify(msg);
+      } catch (e) {
+        return String(msg);
+      }
+    }
+    return String(msg);
+  }
+
+  // Catch JS errors and send to parent
+  window.onerror = function(message, source, lineno, colno, error) {
+    window.parent.postMessage({
+      type: 'sekai_iframe_js_error',
+      message: serializeMessage(message),
+      source: source || '',
+      lineno: lineno || 0,
+      colno: colno || 0,
+      errorName: error ? error.name : '',
+      errorStack: error ? error.stack : ''
+    }, '*');
+    // Return false to allow default error handling
+    return false;
+  };
+
+  // Also catch unhandled promise rejections
+  window.addEventListener('unhandledrejection', function(event) {
+    var reason = event.reason;
+    var isError = reason instanceof Error;
+    window.parent.postMessage({
+      type: 'sekai_iframe_js_error',
+      message: reason ? serializeMessage(reason) : 'Unhandled promise rejection',
+      source: 'unhandledrejection',
+      lineno: 0,
+      colno: 0,
+      errorName: isError ? reason.name : '',
+      errorStack: isError ? reason.stack : ''
+    }, '*');
+  });
+})();
+</script>
+
+<script>
+(function() {
+  // Collect all devicemotion listeners registered by game code
+  var deviceMotionListeners = [];
+
+  // Save original addEventListener
+  var originalAddEventListener = window.addEventListener;
+
+  // Intercept addEventListener to capture devicemotion listeners
+  window.addEventListener = function(type, listener, options) {
+    if (type === 'devicemotion' && typeof listener === 'function') {
+      deviceMotionListeners.push(listener);
+      // Also add to native in case permission is granted elsewhere
+      return originalAddEventListener.call(this, type, listener, options);
+    }
+    return originalAddEventListener.call(this, type, listener, options);
+  };
+
+  // Also intercept removeEventListener
+  var originalRemoveEventListener = window.removeEventListener;
+  window.removeEventListener = function(type, listener, options) {
+    if (type === 'devicemotion' && typeof listener === 'function') {
+      var index = deviceMotionListeners.indexOf(listener);
+      if (index !== -1) {
+        deviceMotionListeners.splice(index, 1);
+      }
+    }
+    return originalRemoveEventListener.call(this, type, listener, options);
+  };
+
+  // Listen for forwarded motion data from parent
+  window.addEventListener('message', function(event) {
+    if (!event.data || event.data.type !== '__sekai_device_motion__') return;
+
+    var data = event.data;
+
+    // Create a synthetic event-like object
+    var syntheticEvent = {
+      accelerationIncludingGravity: data.accelerationIncludingGravity,
+      acceleration: data.acceleration,
+      rotationRate: data.rotationRate,
+      interval: data.interval || 16,
+      // Make it look like a real event
+      type: 'devicemotion',
+      timeStamp: data.timestamp || Date.now(),
+      target: window,
+      currentTarget: window,
+      preventDefault: function() {},
+      stopPropagation: function() {},
+      stopImmediatePropagation: function() {}
+    };
+
+    // Trigger all registered listeners
+    deviceMotionListeners.forEach(function(listener) {
+      try {
+        listener(syntheticEvent);
+      } catch (e) {
+        // Ignore listener errors
+      }
+    });
+  });
+})();
+</script>
+
+<script>
+(function() {
+  // Track all AudioContexts created in this iframe
+  var audioContexts = [];
+  var originalAudioContext = window.AudioContext || window.webkitAudioContext;
+
+  if (originalAudioContext) {
+    // Patch AudioContext constructor to track instances
+    var PatchedAudioContext = function() {
+      var ctx = new originalAudioContext();
+      audioContexts.push(ctx);
+      return ctx;
+    };
+    PatchedAudioContext.prototype = originalAudioContext.prototype;
+    window.AudioContext = PatchedAudioContext;
+    if (window.webkitAudioContext) {
+      window.webkitAudioContext = PatchedAudioContext;
+    }
+  }
+
+  // Track all Audio objects (including those created via new Audio())
+  var audioElements = [];
+  var originalAudio = window.Audio;
+  
+  if (originalAudio) {
+    window.Audio = function(src) {
+      var audio = new originalAudio(src);
+      audioElements.push(audio);
+      return audio;
+    };
+    // Preserve prototype chain
+    window.Audio.prototype = originalAudio.prototype;
+  }
+
+  // Track video elements created via createElement
+  var videoElements = [];
+  var originalCreateElement = document.createElement;
+  
+  document.createElement = function(tagName) {
+    var element = originalCreateElement.call(document, tagName);
+    
+    // Track audio and video elements
+    if (typeof tagName === 'string') {
+      var tag = tagName.toLowerCase();
+      if (tag === 'audio') {
+        audioElements.push(element);
+      } else if (tag === 'video') {
+        videoElements.push(element);
+      }
+    }
+    
+    return element;
+  };
+
+  // Track muted state to restore correctly
+  var mutedElements = new WeakMap();
+  var isMuted = false;
+
+  function muteAllAudio() {
+    if (isMuted) return;
+    isMuted = true;
+
+    // Suspend all AudioContexts
+    audioContexts.forEach(function(ctx) {
+      if (ctx && ctx.state === 'running') {
+        ctx.suspend().catch(function() {});
+      }
+    });
+
+    // Mute all audio and video elements in DOM
+    var mediaElements = document.querySelectorAll('audio, video');
+    mediaElements.forEach(function(el) {
+      // Remember original muted state
+      mutedElements.set(el, el.muted);
+      el.muted = true;
+    });
+
+    // Mute all tracked Audio objects (created via new Audio() or createElement)
+    audioElements.forEach(function(audio) {
+      try {
+        if (!mutedElements.has(audio)) {
+          mutedElements.set(audio, audio.muted);
+        }
+        audio.muted = true;
+      } catch (e) {
+        // Audio might be garbage collected or invalid
+      }
+    });
+
+    // Mute all tracked Video objects (created via createElement)
+    videoElements.forEach(function(video) {
+      try {
+        if (!mutedElements.has(video)) {
+          mutedElements.set(video, video.muted);
+        }
+        video.muted = true;
+      } catch (e) {
+        // Video might be garbage collected or invalid
+      }
+    });
+  }
+
+  function unmuteAllAudio() {
+    if (!isMuted) return;
+    isMuted = false;
+
+    // Resume all AudioContexts
+    audioContexts.forEach(function(ctx) {
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().catch(function() {});
+      }
+    });
+
+    // Restore audio and video elements in DOM to original state
+    var mediaElements = document.querySelectorAll('audio, video');
+    mediaElements.forEach(function(el) {
+      var wasMuted = mutedElements.get(el);
+      if (wasMuted !== undefined) {
+        el.muted = wasMuted;
+      } else {
+        el.muted = false;
+      }
+    });
+
+    // Restore tracked Audio objects to original state
+    audioElements.forEach(function(audio) {
+      try {
+        var wasMuted = mutedElements.get(audio);
+        if (wasMuted !== undefined) {
+          audio.muted = wasMuted;
+        } else {
+          audio.muted = false;
+        }
+      } catch (e) {
+        // Audio might be garbage collected or invalid
+      }
+    });
+
+    // Restore tracked Video objects to original state
+    videoElements.forEach(function(video) {
+      try {
+        var wasMuted = mutedElements.get(video);
+        if (wasMuted !== undefined) {
+          video.muted = wasMuted;
+        } else {
+          video.muted = false;
+        }
+      } catch (e) {
+        // Video might be garbage collected or invalid
+      }
+    });
+  }
+
+  window.addEventListener('message', function(event) {
+    if (!event.data) return;
+
+    if (event.data.type === 'receive_audio_mute' ||
+        (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_mute')) {
+      muteAllAudio();
+    }
+
+    if (event.data.type === 'receive_audio_unmute' ||
+        (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_unmute')) {
+      unmuteAllAudio();
+    }
+  });
+})();
+</script>
+
+<script>
+(function() {
+  // Set styles to contain scroll and prevent propagation to parent
+  // CRITICAL: touch-action:none is the PRIMARY scroll blocker - it's handled by the compositor
+  // without waiting for JS, preventing WebView freezes during rapid swipes
+  var style = document.createElement('style');
+  style.textContent = 'html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}';
+  document.head.appendChild(style);
+
+  // Track scrollable elements to re-enable touch-action for them
+  var scrollableTarget = null;
+
+  // Find scrollable ancestor of touch target
+  function findScrollableAncestor(el) {
+    while (el && el !== document.body && el !== document.documentElement) {
+      var cs = window.getComputedStyle(el);
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  // On touchstart, check if we're in a scrollable element
+  // If so, temporarily enable touch-action for that element
+  document.addEventListener('touchstart', function(e) {
+    if (e.touches.length !== 1) {
+      scrollableTarget = null;
+      return;
+    }
+
+    scrollableTarget = findScrollableAncestor(e.target);
+
+    // If there's a scrollable element, enable touch-action:pan-y for it
+    if (scrollableTarget) {
+      scrollableTarget.style.touchAction = 'pan-y';
+    }
+  }, { passive: true, capture: true });
+
+  // On touchend, reset touch-action
+  document.addEventListener('touchend', function(e) {
+    if (scrollableTarget) {
+      scrollableTarget.style.touchAction = '';
+      scrollableTarget = null;
+    }
+  }, { passive: true, capture: true });
+
+  // Notify parent when input is focused (for keyboard handling)
+  document.addEventListener('focusin', function(e) {
+    var t = e.target;
+    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) {
+      window.parent.postMessage({ type: 'iframe-focusin' }, '*');
+    }
+  }, true);
+
+  document.addEventListener('focusout', function(e) {
+    var t = e.target;
+    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) {
+      window.parent.postMessage({ type: 'iframe-focusout' }, '*');
+    }
+  }, true);
+})();
+</script><style>html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}</style>
+
+<script>
+(function() {
+  var viewportStyle = document.createElement('style');
+  viewportStyle.id = 'sekai-viewport-style';
+  document.head.appendChild(viewportStyle);
+
+  var currentHeight = null;
+
+  function applyHeight(height) {
+    if (height === currentHeight) return;
+    currentHeight = height;
+
+    var transition = 'transition: height 0.25s cubic-bezier(0.32, 0, 0.68, 1) !important;';
+
+    if (typeof height === 'number' && height > 0) {
+      viewportStyle.textContent =
+        ':root { --sekai-viewport-height: ' + height + 'px; }' +
+        'html { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }' +
+        'body { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }';
+    } else {
+      viewportStyle.textContent =
+        ':root { --sekai-viewport-height: 100%; }' +
+        'html { height: 100% !important; overflow: hidden !important; }' +
+        'body { height: 100% !important; overflow: hidden !important; }';
+    }
+  }
+
+  window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'viewport_height_change') {
+      var height = typeof event.data.height === 'number' ? event.data.height : null;
+      applyHeight(height);
+    }
+  });
+
+  // Notify parent that viewport handler is ready (handshake)
+  window.parent.postMessage({ type: 'viewport_ready' }, '*');
+})();
+</script><style id="sekai-viewport-style"></style>
+
+<script>
+(function() {
+  var touchStartY = null;
+  var lastSentTime = 0;
+  var SWIPE_THRESHOLD = 100;
+  var DEBOUNCE_MS = 500; // Prevent multiple events from single swipe
+
+  document.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 1) {
+      touchStartY = e.touches[0].clientY;
+    }
+  }, { passive: true, capture: true });
+
+  document.addEventListener('touchend', function(e) {
+    if (touchStartY !== null && e.changedTouches.length === 1) {
+      var now = Date.now();
+      var deltaY = touchStartY - e.changedTouches[0].clientY;
+      var timeSinceLast = now - lastSentTime;
+      // Only send if above threshold AND not within debounce window
+      if (deltaY >= SWIPE_THRESHOLD && timeSinceLast >= DEBOUNCE_MS) {
+        lastSentTime = now;
+        window.parent.postMessage({
+          type: 'sekai_iframe_swipe_up',
+          deltaY: deltaY,
+          timestamp: now
+        }, '*');
+      }
+    }
+    touchStartY = null;
+  }, { passive: true, capture: true });
+
+  document.addEventListener('touchcancel', function() {
+    touchStartY = null;
+  }, { passive: true, capture: true });
+})();
+</script>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NumRacer: Face-to-Face</title>
+    
+    <!-- Libraries -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Snapdom for Sharing -->
+    <script type="module">
+        import { snapdom } from 'https://cdn.jsdelivr.net/npm/@zumer/snapdom@2.0.2/+esm';
+        window.snapdom = snapdom;
+    </script>
+
+    <style>
+        /* Base & Reset */
+        :root {
+            --p1-color: #4F46E5;
+            --p1-cube-bg: #FFFFFF;
+            --p2-color: #E11D48;
+            --p2-cube-bg: #FFFFFF;
+            --slot-bg: #F1F5F9;
+            --slot-border: #CBD5E1;
+            --correct: #22C55E;
+            --incorrect: #EF4444;
+            --divider-color: #CBD5E1;
+        }
+        
+        * {
+            touch-action: none; /* Prevent browser scrolling/zooming */
+            user-select: none;
+            -webkit-user-select: none;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #F8FAFC;
+        }
+
+        /* Utilities */
+        .hidden { display: none !important; }
+        .flex-center { display: flex; align-items: center; justify-content: center; }
+        
+        /* Layer Architecture */
+        #layer-bg { z-index: 0; position: absolute; inset: 0; pointer-events: none; }
+        #layer-ui { z-index: 10; position: absolute; inset: 0; display: flex; flex-direction: column; }
+        #layer-overlay { z-index: 50; position: absolute; inset: 0; pointer-events: none; }
+        
+        /* Game Board */
+        .player-zone {
+            flex: 1;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+            overflow: hidden;
+        }
+
+        .game-divider {
+            height: 8px;
+            background: var(--divider-color);
+            width: 100%;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .player-zone.inverted {
+            transform: rotate(180deg);
+        }
+
+        .pseudo-label {
+            position: absolute;
+            top: 5px;
+            right: 15px;
+            font-size: 12px;
+            font-weight: bold;
+            color: #64748b;
+            background: rgba(255,255,255,0.8);
+            padding: 2px 8px;
+            border-radius: 4px;
+            z-index: 5;
+        }
+
+        /* Grid */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            grid-template-rows: repeat(5, 1fr);
+            gap: 4px;
+            width: 90%;
+            max-width: 280px; /* Noticeably Medium size */
+            aspect-ratio: 4 / 5;
+            margin: auto;
+            padding: 8px;
+            background: #E2E8F0;
+            border-radius: 16px;
+        }
+
+        /* Slots */
+        .slot {
+            position: relative;
+            background: var(--slot-bg);
+            border: 2px solid #CBD5E1;
+            border-radius: 10px;
+            display: flex;
+            align-items: flex-start; /* For labels at top */
+            justify-content: center;
+            font-size: 10px;
+            color: #94A3B8;
+            font-weight: bold;
+            transition: all 0.2s;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+            padding-top: 4px;
+        }
+
+        .buffer-slot {
+            opacity: 0.4;
+            background: #F8FAFC;
+        }
+        
+        /* Cubes (Phone Keypad Style) */
+        .cube {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: #FFFFFF;
+            border-radius: 8px; /* Slightly sharper to fit slots better */
+            /* Deep shadow for 'raised button' look */
+            box-shadow: 0 3px 0 #CBD5E1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: 800;
+            color: #1E293B;
+            border: 1px solid #E2E8F0;
+            touch-action: none;
+            z-index: 20;
+            transform-origin: center center;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        .cube[data-player="p2"] {
+            background: var(--p2-cube-bg);
+        }
+
+        @keyframes congrats-pop {
+            0% { transform: scale(0.5) translateY(0); opacity: 0; }
+            50% { transform: scale(1.2) translateY(-20px); opacity: 1; }
+            100% { transform: scale(1) translateY(-30px); opacity: 0; }
+        }
+
+        .congrats-text {
+            position: absolute;
+            color: #22C55E;
+            font-weight: 900;
+            font-size: 14px;
+            pointer-events: none;
+            z-index: 100;
+            animation: congrats-pop 0.8s ease-out forwards;
+        }
+
+        .cube:active, .cube.dragging {
+            z-index: 100 !important;
+            transform: scale(1.1);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            opacity: 0.9;
+        }
+
+        .cube.correct {
+            background-color: #DCFCE7;
+            border-color: var(--correct);
+            color: var(--correct);
+        }
+
+        .cube.wrong {
+            background-color: #FEE2E2;
+            border-color: var(--incorrect);
+            color: var(--incorrect);
+        }
+
+        /* UI Components */
+        .btn-primary {
+            background: #4F46E5;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-weight: 600;
+            box-shadow: 0 4px 6px rgba(79, 70, 229, 0.3);
+            transition: transform 0.1s;
+        }
+        .btn-primary:active { transform: scale(0.96); }
+
+        .btn-secondary {
+            background: white;
+            color: #475569;
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-weight: 600;
+            border: 1px solid #E2E8F0;
+            transition: transform 0.1s;
+        }
+        .btn-secondary:active { transform: scale(0.96); }
+
+        /* Overlays */
+        .overlay-screen {
+            position: absolute;
+            inset: 0;
+            background: #F8FAFC;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            pointer-events: auto;
+            transition: opacity 0.3s;
+        }
+
+        /* Enable scrolling for admin screen despite global touch-action: none */
+        #screen-admin, #screen-admin * {
+            touch-action: pan-y !important;
+        }
+        
+        .overlay-screen.hidden-anim {
+            visibility: hidden;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Form Inputs */
+        .input-field {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #CBD5E1;
+            border-radius: 8px;
+            font-size: 16px; /* iOS zoom prevention */
+            margin-bottom: 12px;
+            background: white;
+        }
+
+        /* Pile Styling (Draw & Score) */
+        .draw-pile-container, .score-pile-container {
+            position: absolute;
+            bottom: 15px;
+            width: 54px;
+            height: 54px;
+            border: 2px dashed #94A3B8;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 5;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .draw-pile-container {
+            left: 15px;
+            background: #E2E8F0;
+        }
+
+        .score-pile-container {
+            right: 65px; /* Shifted to avoid overlap with Shuffle/Restart buttons */
+            background: #DCFCE7;
+            border-color: #22C55E;
+        }
+        
+        .pile-label {
+            font-size: 8px;
+            font-weight: 800;
+            text-align: center;
+            text-transform: uppercase;
+            line-height: 1;
+            pointer-events: none;
+        }
+        
+        .draw-pile-label { color: #64748B; }
+        .score-pile-label { color: #166534; }
+
+        .deck-counter, .score-counter {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            color: white;
+            font-size: 9px;
+            padding: 2px 5px;
+            border-radius: 10px;
+            font-weight: bold;
+            z-index: 10;
+        }
+        
+        .deck-counter { background: #475569; }
+        .score-counter { background: #166534; }
+
+        /* Animation for stacking to score pile */
+        .cube.stacking {
+            transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.6s;
+            pointer-events: none;
+            z-index: 100 !important;
+        }
+
+        .slot.completed {
+            background: #DCFCE7 !important;
+            border-color: #22C55E !important;
+            color: #22C55E !important;
+            box-shadow: none !important;
+        }
+
+    </style>
+<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }::backdrop{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-x: ;--tw-pan-y: ;--tw-pinch-zoom: ;--tw-scroll-snap-strictness:proximity;--tw-gradient-from-position: ;--tw-gradient-via-position: ;--tw-gradient-to-position: ;--tw-ordinal: ;--tw-slashed-zero: ;--tw-numeric-figure: ;--tw-numeric-spacing: ;--tw-numeric-fraction: ;--tw-ring-inset: ;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-color:rgb(59 130 246 / 0.5);--tw-ring-offset-shadow:0 0 #0000;--tw-ring-shadow:0 0 #0000;--tw-shadow:0 0 #0000;--tw-shadow-colored:0 0 #0000;--tw-blur: ;--tw-brightness: ;--tw-contrast: ;--tw-grayscale: ;--tw-hue-rotate: ;--tw-invert: ;--tw-saturate: ;--tw-sepia: ;--tw-drop-shadow: ;--tw-backdrop-blur: ;--tw-backdrop-brightness: ;--tw-backdrop-contrast: ;--tw-backdrop-grayscale: ;--tw-backdrop-hue-rotate: ;--tw-backdrop-invert: ;--tw-backdrop-opacity: ;--tw-backdrop-saturate: ;--tw-backdrop-sepia: ;--tw-contain-size: ;--tw-contain-layout: ;--tw-contain-paint: ;--tw-contain-style: }/* ! tailwindcss v3.4.17 | MIT License | https://tailwindcss.com */*,::after,::before{box-sizing:border-box;border-width:0;border-style:solid;border-color:#e5e7eb}::after,::before{--tw-content:''}:host,html{line-height:1.5;-webkit-text-size-adjust:100%;-moz-tab-size:4;tab-size:4;font-family:ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";font-feature-settings:normal;font-variation-settings:normal;-webkit-tap-highlight-color:transparent}body{margin:0;line-height:inherit}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,pre,samp{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-feature-settings:normal;font-variation-settings:normal;font-size:1em}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}button,input,optgroup,select,textarea{font-family:inherit;font-feature-settings:inherit;font-variation-settings:inherit;font-size:100%;font-weight:inherit;line-height:inherit;letter-spacing:inherit;color:inherit;margin:0;padding:0}button,select{text-transform:none}button,input:where([type=button]),input:where([type=reset]),input:where([type=submit]){-webkit-appearance:button;background-color:transparent;background-image:none}:-moz-focusring{outline:auto}:-moz-ui-invalid{box-shadow:none}progress{vertical-align:baseline}::-webkit-inner-spin-button,::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}summary{display:list-item}blockquote,dd,dl,figure,h1,h2,h3,h4,h5,h6,hr,p,pre{margin:0}fieldset{margin:0;padding:0}legend{padding:0}menu,ol,ul{list-style:none;margin:0;padding:0}dialog{padding:0}textarea{resize:vertical}input::placeholder,textarea::placeholder{opacity:1;color:#9ca3af}[role=button],button{cursor:pointer}:disabled{cursor:default}audio,canvas,embed,iframe,img,object,svg,video{display:block;vertical-align:middle}img,video{max-width:100%;height:auto}[hidden]:where(:not([hidden=until-found])){display:none}.pointer-events-none{pointer-events:none}.visible{visibility:visible}.fixed{position:fixed}.absolute{position:absolute}.inset-0{inset:0px}.bottom-2{bottom:0.5rem}.left-2{left:0.5rem}.right-2{right:0.5rem}.top-2{top:0.5rem}.z-50{z-index:50}.z-\[110\]{z-index:110}.col-span-2{grid-column:span 2 / span 2}.mx-auto{margin-left:auto;margin-right:auto}.\!mb-1{margin-bottom:0.25rem !important}.\!mb-2{margin-bottom:0.5rem !important}.mb-1{margin-bottom:0.25rem}.mb-2{margin-bottom:0.5rem}.mb-4{margin-bottom:1rem}.mb-6{margin-bottom:1.5rem}.mb-8{margin-bottom:2rem}.mr-1{margin-right:0.25rem}.mr-2{margin-right:0.5rem}.mt-4{margin-top:1rem}.block{display:block}.flex{display:flex}.grid{display:grid}.hidden{display:none}.h-10{height:2.5rem}.h-24{height:6rem}.h-32{height:8rem}.h-full{height:100%}.max-h-60{max-height:15rem}.w-10\/12{width:83.333333%}.w-24{width:6rem}.w-32{width:8rem}.w-full{width:100%}.max-w-md{max-width:28rem}.max-w-sm{max-width:24rem}.flex-1{flex:1 1 0%}.rotate-12{--tw-rotate:12deg;transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y))}.scale-90{--tw-scale-x:.9;--tw-scale-y:.9;transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y))}.transform{transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y))}.grid-cols-2{grid-template-columns:repeat(2, minmax(0, 1fr))}.grid-cols-3{grid-template-columns:repeat(3, minmax(0, 1fr))}.flex-col{flex-direction:column}.items-center{align-items:center}.justify-center{justify-content:center}.justify-between{justify-content:space-between}.gap-1{gap:0.25rem}.gap-2{gap:0.5rem}.gap-3{gap:0.75rem}.gap-4{gap:1rem}.space-y-2 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0.5rem * var(--tw-space-y-reverse))}.space-y-3 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(0.75rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(0.75rem * var(--tw-space-y-reverse))}.space-y-4 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1rem * var(--tw-space-y-reverse))}.space-y-6 > :not([hidden]) ~ :not([hidden]){--tw-space-y-reverse:0;margin-top:calc(1.5rem * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc(1.5rem * var(--tw-space-y-reverse))}.overflow-y-auto{overflow-y:auto}.whitespace-pre-wrap{white-space:pre-wrap}.rounded-xl{border-radius:0.75rem}.rounded-2xl{border-radius:1rem}.rounded-3xl{border-radius:1.5rem}.border{border-width:1px}.border-0{border-width:0px}.border-4{border-width:4px}.border-indigo-100{--tw-border-opacity:1;border-color:rgb(224 231 255 / var(--tw-border-opacity, 1))}.border-indigo-700{--tw-border-opacity:1;border-color:rgb(67 56 202 / var(--tw-border-opacity, 1))}.border-rose-100{--tw-border-opacity:1;border-color:rgb(255 228 230 / var(--tw-border-opacity, 1))}.border-rose-700{--tw-border-opacity:1;border-color:rgb(190 18 60 / var(--tw-border-opacity, 1))}.border-slate-100{--tw-border-opacity:1;border-color:rgb(241 245 249 / var(--tw-border-opacity, 1))}.bg-indigo-600{--tw-bg-opacity:1;background-color:rgb(79 70 229 / var(--tw-bg-opacity, 1))}.bg-rose-600{--tw-bg-opacity:1;background-color:rgb(225 29 72 / var(--tw-bg-opacity, 1))}.bg-white{--tw-bg-opacity:1;background-color:rgb(255 255 255 / var(--tw-bg-opacity, 1))}.bg-black\/50{background-color:rgb(0 0 0 / 0.5)}.bg-black\/60{background-color:rgb(0 0 0 / 0.6)}.bg-slate-50{--tw-bg-opacity:1;background-color:rgb(248 250 252 / var(--tw-bg-opacity, 1))}.object-contain{object-fit:contain}.p-0{padding:0px}.p-2{padding:0.5rem}.p-4{padding:1rem}.p-6{padding:1.5rem}.p-8{padding:2rem}.px-3{padding-left:0.75rem;padding-right:0.75rem}.py-2{padding-top:0.5rem;padding-bottom:0.5rem}.px-1{padding-left:0.25rem;padding-right:0.25rem}.px-6{padding-left:1.5rem;padding-right:1.5rem}.py-4{padding-top:1rem;padding-bottom:1rem}.pr-2{padding-right:0.5rem}.pt-4{padding-top:1rem}.pt-6{padding-top:1.5rem}.text-center{text-align:center}.text-\[10px\]{font-size:10px}.text-sm{font-size:0.875rem;line-height:1.25rem}.text-2xl{font-size:1.5rem;line-height:2rem}.text-4xl{font-size:2.25rem;line-height:2.5rem}.text-5xl{font-size:3rem;line-height:1}.text-6xl{font-size:3.75rem;line-height:1}.text-lg{font-size:1.125rem;line-height:1.75rem}.text-xl{font-size:1.25rem;line-height:1.75rem}.text-xs{font-size:0.75rem;line-height:1rem}.font-bold{font-weight:700}.font-black{font-weight:900}.font-extrabold{font-weight:800}.font-medium{font-weight:500}.uppercase{text-transform:uppercase}.italic{font-style:italic}.leading-relaxed{line-height:1.625}.tracking-wider{letter-spacing:0.05em}.text-indigo-500{--tw-text-opacity:1;color:rgb(99 102 241 / var(--tw-text-opacity, 1))}.text-indigo-600{--tw-text-opacity:1;color:rgb(79 70 229 / var(--tw-text-opacity, 1))}.text-rose-500{--tw-text-opacity:1;color:rgb(244 63 94 / var(--tw-text-opacity, 1))}.text-rose-600{--tw-text-opacity:1;color:rgb(225 29 72 / var(--tw-text-opacity, 1))}.text-white{--tw-text-opacity:1;color:rgb(255 255 255 / var(--tw-text-opacity, 1))}.text-slate-400{--tw-text-opacity:1;color:rgb(148 163 184 / var(--tw-text-opacity, 1))}.text-slate-500{--tw-text-opacity:1;color:rgb(100 116 139 / var(--tw-text-opacity, 1))}.text-slate-600{--tw-text-opacity:1;color:rgb(71 85 105 / var(--tw-text-opacity, 1))}.text-slate-800{--tw-text-opacity:1;color:rgb(30 41 59 / var(--tw-text-opacity, 1))}.text-yellow-500{--tw-text-opacity:1;color:rgb(234 179 8 / var(--tw-text-opacity, 1))}.opacity-50{opacity:0.5}.opacity-0{opacity:0}.shadow-lg{--tw-shadow:0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);--tw-shadow-colored:0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.shadow-2xl{--tw-shadow:0 25px 50px -12px rgb(0 0 0 / 0.25);--tw-shadow-colored:0 25px 50px -12px var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.shadow-sm{--tw-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);--tw-shadow-colored:0 1px 2px 0 var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.shadow-xl{--tw-shadow:0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);--tw-shadow-colored:0 20px 25px -5px var(--tw-shadow-color), 0 8px 10px -6px var(--tw-shadow-color);box-shadow:var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)}.backdrop-blur-sm{--tw-backdrop-blur:blur(4px);-webkit-backdrop-filter:var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);backdrop-filter:var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia)}.transition-transform{transition-property:transform;transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);transition-duration:150ms}.transition-opacity{transition-property:opacity;transition-timing-function:cubic-bezier(0.4, 0, 0.2, 1);transition-duration:150ms}.duration-300{transition-duration:300ms}.duration-500{transition-duration:500ms}.active\:scale-95:active{--tw-scale-x:.95;--tw-scale-y:.95;transform:translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y))}</style></head>
+<body style="user-select: none; height: 100%; overscroll-behavior: contain;">
+
+    <!-- Audio Elements -->
+    <audio id="music-bgm" loop="" src="https://prod-data.sekai.chat/aiu-bgm/1e978ac6-6cf0-4c11-b821-c2dbca52810e_Race Gurram-SenSongsMp3.Com_normalized.mp3"></audio>
+    <audio id="sfx-win" src="https://prod-data.sekai.chat/aiu-music-sfx/472_Roblox_Old_Winning_Sound_04bbc616bbd24ce7a6315d04ee956fed.mp3"></audio>
+    <audio id="sfx-place" src="https://prod-data.sekai.chat/aiu-music-sfx/674_Duolingo_Correct_SFX_1a449d3ba92041239ee10d2ef59f3c17.mp3"></audio>
+    <audio id="sfx-wrong" src="https://prod-data.sekai.chat/aiu-music-sfx/48/error_sound_xh_01_bf8135fce2540c5bb191244ff9bb459e.mp3"></audio>
+
+    <!-- Hidden File Input for Music Upload -->
+    <input type="file" id="music-upload" accept="audio/*, .mp3, .wav, .m4a, .ogg" class="hidden" onchange="handleMusicFile(this)">
+
+    <!-- MAIN UI LAYER -->
+    <div id="layer-ui">
+        
+        <!-- Player 2 Zone (Top, Inverted) -->
+        <div class="player-zone inverted" id="p2-zone">
+            <div class="pseudo-label" id="p2-pseudo-display">Joueur 2</div>
+            <div class="absolute top-2 left-2 text-sm text-rose-500 font-bold opacity-50">PLAYER 2</div>
+            <div class="absolute bottom-2 right-2 flex flex-col gap-2 z-50">
+                <button onclick="spawnCubes('p2-zone', 'p2')" class="bg-white shadow-lg px-3 py-2 rounded-xl text-[10px] font-bold text-rose-600 border border-rose-100 flex items-center gap-1 active:scale-95 transition-transform">
+                    <i class="fa-solid fa-shuffle"></i> MIXER
+                </button>
+                <button onclick="startGame()" class="bg-rose-600 shadow-lg px-3 py-2 rounded-xl text-[10px] font-bold text-white border border-rose-700 flex items-center gap-1 active:scale-95 transition-transform">
+                    <i class="fa-solid fa-rotate-right"></i> RELANCER
+                </button>
+            </div>
+            <div class="draw-pile-container" id="p2-draw-pile">
+                <div class="pile-label draw-pile-label">PIOCHE<br>J2</div>
+                <div class="deck-counter" id="p2-deck-count">16</div>
+            </div>
+            <div class="score-pile-container" id="p2-score-pile">
+                <div class="pile-label score-pile-label">SCORE<br>J2</div>
+                <div class="score-counter" id="p2-score-count">0</div>
+            </div>
+            <div class="grid-container" id="p2-grid"><div class="slot" data-index="0" data-player="p2" style="color: rgb(203, 213, 225);">1</div><div class="slot" data-index="1" data-player="p2" style="color: rgb(203, 213, 225);">2</div><div class="slot" data-index="2" data-player="p2" style="color: rgb(203, 213, 225);">3</div><div class="slot" data-index="3" data-player="p2" style="color: rgb(203, 213, 225);">4</div><div class="slot" data-index="4" data-player="p2" style="color: rgb(203, 213, 225);">5</div><div class="slot" data-index="5" data-player="p2" style="color: rgb(203, 213, 225);">6</div><div class="slot" data-index="6" data-player="p2" style="color: rgb(203, 213, 225);">7</div><div class="slot" data-index="7" data-player="p2" style="color: rgb(203, 213, 225);">8</div><div class="slot" data-index="8" data-player="p2" style="color: rgb(203, 213, 225);">9</div><div class="slot" data-index="9" data-player="p2" style="color: rgb(203, 213, 225);">10</div><div class="slot" data-index="10" data-player="p2" style="color: rgb(203, 213, 225);">11</div><div class="slot" data-index="11" data-player="p2" style="color: rgb(203, 213, 225);">12</div><div class="slot" data-index="12" data-player="p2" style="color: rgb(203, 213, 225);">13</div><div class="slot" data-index="13" data-player="p2" style="color: rgb(203, 213, 225);">14</div><div class="slot" data-index="14" data-player="p2" style="color: rgb(203, 213, 225);">15</div><div class="slot" data-index="15" data-player="p2" style="color: rgb(203, 213, 225);">16</div><div class="slot buffer-slot" data-index="16" data-player="p2"></div><div class="slot buffer-slot" data-index="17" data-player="p2"></div><div class="slot buffer-slot" data-index="18" data-player="p2"></div><div class="slot buffer-slot" data-index="19" data-player="p2"></div></div>
+        </div>
+
+        <div class="game-divider"></div>
+
+        <!-- Player 1 Zone (Bottom) -->
+        <div class="player-zone" id="p1-zone">
+            <div class="pseudo-label" id="p1-pseudo-display">Joueur 1</div>
+            <div class="absolute top-2 left-2 text-sm text-indigo-500 font-bold opacity-50">PLAYER 1</div>
+            <div class="absolute bottom-2 right-2 flex flex-col gap-2 z-50">
+                <button onclick="spawnCubes('p1-zone', 'p1')" class="bg-white shadow-lg px-3 py-2 rounded-xl text-[10px] font-bold text-indigo-600 border border-indigo-100 flex items-center gap-1 active:scale-95 transition-transform">
+                    <i class="fa-solid fa-shuffle"></i> MIXER
+                </button>
+                <button onclick="startGame()" class="bg-indigo-600 shadow-lg px-3 py-2 rounded-xl text-[10px] font-bold text-white border border-indigo-700 flex items-center gap-1 active:scale-95 transition-transform">
+                    <i class="fa-solid fa-rotate-right"></i> RELANCER
+                </button>
+            </div>
+            <div class="draw-pile-container" id="p1-draw-pile">
+                <div class="pile-label draw-pile-label">PIOCHE<br>J1</div>
+                <div class="deck-counter" id="p1-deck-count">16</div>
+            </div>
+            <div class="score-pile-container" id="p1-score-pile">
+                <div class="pile-label score-pile-label">SCORE<br>J1</div>
+                <div class="score-counter" id="p1-score-count">0</div>
+            </div>
+            <div class="grid-container" id="p1-grid"><div class="slot" data-index="0" data-player="p1" style="color: rgb(203, 213, 225);">1</div><div class="slot" data-index="1" data-player="p1" style="color: rgb(203, 213, 225);">2</div><div class="slot" data-index="2" data-player="p1" style="color: rgb(203, 213, 225);">3</div><div class="slot" data-index="3" data-player="p1" style="color: rgb(203, 213, 225);">4</div><div class="slot" data-index="4" data-player="p1" style="color: rgb(203, 213, 225);">5</div><div class="slot" data-index="5" data-player="p1" style="color: rgb(203, 213, 225);">6</div><div class="slot" data-index="6" data-player="p1" style="color: rgb(203, 213, 225);">7</div><div class="slot" data-index="7" data-player="p1" style="color: rgb(203, 213, 225);">8</div><div class="slot" data-index="8" data-player="p1" style="color: rgb(203, 213, 225);">9</div><div class="slot" data-index="9" data-player="p1" style="color: rgb(203, 213, 225);">10</div><div class="slot" data-index="10" data-player="p1" style="color: rgb(203, 213, 225);">11</div><div class="slot" data-index="11" data-player="p1" style="color: rgb(203, 213, 225);">12</div><div class="slot" data-index="12" data-player="p1" style="color: rgb(203, 213, 225);">13</div><div class="slot" data-index="13" data-player="p1" style="color: rgb(203, 213, 225);">14</div><div class="slot" data-index="14" data-player="p1" style="color: rgb(203, 213, 225);">15</div><div class="slot" data-index="15" data-player="p1" style="color: rgb(203, 213, 225);">16</div><div class="slot buffer-slot" data-index="16" data-player="p1"></div><div class="slot buffer-slot" data-index="17" data-player="p1"></div><div class="slot buffer-slot" data-index="18" data-player="p1"></div><div class="slot buffer-slot" data-index="19" data-player="p1"></div></div>
+        </div>
+
+    </div>
+
+    <!-- START SCREEN -->
+    <div id="screen-start" class="overlay-screen flex-center">
+        <div class="max-w-md w-full px-6 text-center space-y-6">
+            <div class="space-y-2">
+                <!-- Logo -->
+                <div id="logo-container" class="mx-auto w-24 h-24 mb-4 hidden">
+                    <img id="app-logo" src="" alt="Logo" class="w-full h-full object-contain">
+                </div>
+                <h1 class="text-4xl font-extrabold text-slate-800" id="app-title">NumRacer : Le Duel</h1>
+                <p id="app-subtitle" class="text-slate-500 text-lg">La course aux chiffres face à face</p>
+                <p id="app-created-by" class="text-xs text-slate-400 font-medium">Créé par Votre Nom</p>
+            </div>
+
+            <div class="py-4">
+                <div class="w-32 h-32 mx-auto bg-white rounded-2xl shadow-xl flex items-center justify-center border-4 border-indigo-100 rotate-12 mb-4">
+                    <span class="text-5xl font-bold text-indigo-600">16</span>
+                </div>
+                <p class="text-slate-600" id="start-instruction">Rangez les chiffres de 1 à 16 dans l'ordre. Le premier à finir gagne !</p>
+            </div>
+
+            <div class="flex flex-col gap-3">
+                <button onclick="showPlayerSetup()" class="btn-primary text-xl w-full">
+                    <i class="fa-solid fa-play mr-2"></i> JOUER
+                </button>
+                <button onclick="toggleRulesModal(true)" class="btn-secondary w-full">
+                    <i class="fa-solid fa-book-open mr-2"></i> RÈGLES DU JEU
+                </button>
+                <button id="admin-btn-hidden" onclick="showAdmin()" class="text-slate-400 text-xs py-2 mt-4">
+                    <i class="fa-solid fa-gear mr-1"></i> PARAMÈTRES ADMIN
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- RULES MODAL -->
+    <div id="modal-rules" class="fixed inset-0 z-[110] flex-center bg-black/50 hidden opacity-0 transition-opacity duration-300 pointer-events-none">
+        <div class="bg-white w-10/12 max-w-sm rounded-3xl p-6 shadow-2xl space-y-4">
+            <h3 class="text-xl font-bold text-slate-800 flex items-center">
+                <i class="fa-solid fa-circle-info text-indigo-500 mr-2"></i> Règles
+            </h3>
+            <div id="display-rules" class="text-slate-600 text-sm whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto pr-2">1. Chaque joueur dispose de 20 casiers et 16 cubes numérotés.
+2. Glissez les cubes vers les casiers correspondants (1 à 16).
+3. Les cubes mal placés s'affichent en rouge.
+4. Le premier à ranger tous ses numéros correctement gagne la partie !</div>
+            <button onclick="toggleRulesModal(false)" class="btn-primary w-full">FERMER</button>
+        </div>
+    </div>
+
+    <!-- PLAYER SETUP SCREEN -->
+    <div id="screen-player-setup" class="overlay-screen hidden-anim p-6">
+        <div class="w-full max-w-md mx-auto space-y-6">
+            <h2 class="text-2xl font-bold text-center">Configuration</h2>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-bold text-slate-500 mb-1">Joueur 1</label>
+                    <input type="text" id="p1-name" class="input-field" placeholder="Nom et Prénom">
+                    <input type="text" id="p1-pseudo" class="input-field" placeholder="Pseudonyme">
+                </div>
+
+                <div id="p2-setup-section">
+                    <label class="block text-sm font-bold text-slate-500 mb-1">Joueur 2</label>
+                    <input type="text" id="p2-name" class="input-field" placeholder="Nom et Prénom">
+                    <input type="text" id="p2-pseudo" class="input-field" placeholder="Pseudonyme">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold text-slate-500 mb-1">Mode de Jeu</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button onclick="setMode('solo')" id="mode-solo" class="mode-btn btn-secondary text-xs px-1">Solo</button>
+                        <button onclick="setMode('multi')" id="mode-multi" class="mode-btn btn-primary text-xs px-1">2 Joueurs</button>
+                        <button onclick="setMode('ai')" id="mode-ai" class="mode-btn btn-secondary text-xs px-1">Ordinateur</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pt-6 space-y-3">
+                <button onclick="startGame()" class="btn-primary w-full">COMMENCER LA PARTIE</button>
+                <button onclick="hidePlayerSetup()" class="btn-secondary w-full">RETOUR</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADMIN SCREEN -->
+    <div id="screen-admin" class="overlay-screen visible" style="pointer-events: auto; opacity: 1;">
+        <div class="w-full max-w-md mx-auto p-6">
+            <div class="flex items-center justify-between mb-8">
+                <h2 class="text-2xl font-bold text-slate-800">Paramètres Admin</h2>
+                <button onclick="hideAdmin()" class="text-slate-400 p-2"><i class="fa-solid fa-xmark fa-lg"></i></button>
+            </div>
+
+            <div class="space-y-6">
+                <!-- Admin Credentials -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 space-y-3">
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Accès Administrateur</label>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Code à 6 chiffres</span>
+                        <input type="number" id="admin-access-code" class="input-field !mb-1" placeholder="Code à 6 chiffres" maxlength="6">
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Question de Sécurité (Reset)</span>
+                        <input type="text" id="admin-security-q-input" class="input-field !mb-1" placeholder="Ex: Quel est mon pseudo ?">
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Réponse attendue</span>
+                        <input type="text" id="admin-security-a-input" class="input-field !mb-1" placeholder="Votre réponse">
+                    </div>
+                </div>
+
+                <!-- Configuration Accueil -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 space-y-3">
+                    <label class="block text-xs font-bold text-slate-400 uppercase">Configuration Accueil</label>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Nom du Jeu</span>
+                        <input type="text" id="input-game-title" class="input-field !mb-2" placeholder="Nom du jeu">
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Sous-titre</span>
+                        <input type="text" id="input-game-subtitle" class="input-field !mb-2" placeholder="Ex: Bataille face à face">
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Créé par</span>
+                        <input type="text" id="input-created-by" class="input-field !mb-2" placeholder="Ex: Jean Dupont">
+                    </div>
+                    <div>
+                        <span class="text-[10px] text-slate-400 font-bold uppercase">Logo du Jeu</span>
+                        <div class="flex items-center gap-2">
+                            <button onclick="document.getElementById('logo-upload').click()" class="btn-secondary flex-1 text-xs">
+                                <i class="fa-solid fa-image mr-1"></i> Charger Logo
+                            </button>
+                            <input type="file" id="logo-upload" accept="image/*" class="hidden" onchange="handleImageUpload(this, 'app-logo')">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rules Section -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Règles du Jeu</label>
+                    <textarea id="input-rules" class="input-field h-24" placeholder="Éditez les règles ici..."></textarea>
+                </div>
+
+                <!-- Contact Section -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Contact / Support</label>
+                    <input type="text" id="input-email" class="input-field" placeholder="Email Support">
+                    <input type="text" id="input-contact" class="input-field" placeholder="Nom du Contact">
+                </div>
+
+                <!-- Music Section -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Musique de Fond</label>
+                    <div class="flex items-center gap-3">
+                        <button onclick="document.getElementById('music-upload').click()" class="btn-secondary flex-1 text-sm">
+                            <i class="fa-solid fa-upload mr-2"></i> Choisir un fichier
+                        </button>
+                        <div id="music-status" class="text-xs text-slate-400 italic">Aucun fichier</div>
+                    </div>
+                </div>
+
+                <!-- Colors Section -->
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                    <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Couleurs</label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-[10px] text-slate-400 font-bold uppercase">Cube Joueur 1</span>
+                            <input type="color" id="admin-p1-cube" class="w-full h-10 border-0 p-0 block">
+                        </div>
+                        <div>
+                            <span class="text-[10px] text-slate-400 font-bold uppercase">Cube Joueur 2</span>
+                            <input type="color" id="admin-p2-cube" class="w-full h-10 border-0 p-0 block">
+                        </div>
+                        <div class="col-span-2">
+                            <span class="text-[10px] text-slate-400 font-bold uppercase">Fond des Casiers</span>
+                            <input type="color" id="admin-slot-bg" class="w-full h-10 border-0 p-0 block">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pt-4 space-y-3">
+                    <button onclick="saveAdminSettings()" class="btn-primary w-full">Enregistrer les Modifications</button>
+                    <button onclick="copySourceCode(this)" class="btn-secondary w-full text-xs">
+                        <i class="fa-solid fa-copy mr-1"></i> COPIER LE CODE SOURCE (EXPORT)
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WIN OVERLAY (Shared for both players, rotated based on winner) -->
+    <div id="screen-win" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm opacity-0 transition-opacity duration-300 pointer-events-none">
+        <div id="win-card" class="bg-white rounded-3xl p-8 shadow-2xl text-center max-w-sm w-10/12 transform transition-transform duration-500 scale-90">
+            <div class="text-6xl mb-4 text-yellow-500"><i class="fa-solid fa-crown"></i></div>
+            <h2 id="win-title" class="text-2xl font-black text-slate-800 mb-2">Le jeu est terminé</h2>
+            <p class="text-slate-500 mb-6">Voulez-vous recommencer ?</p>
+            
+            <div id="share-zone" class="bg-slate-50 p-4 rounded-xl mb-6 border border-slate-100">
+                <div class="text-4xl font-bold text-indigo-600 mb-1" id="win-score-display">0:42</div>
+                <div class="text-xs text-slate-400 uppercase font-bold tracking-wider">Temps écoulé</div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="resetGame()" class="btn-primary w-full text-lg py-4">
+                    OUI
+                </button>
+                <button onclick="backToMenu()" class="btn-secondary w-full text-lg py-4">
+                    NON
+                </button>
+            </div>
+            <div class="mt-4">
+                <button onclick="handleShare()" id="shareBtn" class="text-slate-400 text-xs flex items-center justify-center mx-auto gap-1">
+                    <i class="fa-solid fa-share-nodes"></i> PARTAGER LE RÉSULTAT
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * SEKAI EDITABLE METADATA
+         */
+        window.sekaiEditable = {
+  "tune": [
+    {
+      "id": "dragSpeed",
+      "label": "Drag Smoothing",
+      "type": "slider",
+      "min": 0,
+      "max": 1,
+      "step": 0.1,
+      "value": 0.1,
+      "path": "appState.config.dragSpeed"
+    }
+  ],
+  "text": [
+    {
+      "id": "title",
+      "label": "Nom du Jeu",
+      "type": "text",
+      "value": "NumRacer : Le Duel",
+      "selector": "#app-title"
+    },
+    {
+      "id": "subtitle",
+      "label": "Sous-titre",
+      "type": "text",
+      "value": "La course aux chiffres face à face",
+      "selector": "#app-subtitle"
+    },
+    {
+      "id": "created_by",
+      "label": "Créé par",
+      "type": "text",
+      "value": "Créé par Votre Nom",
+      "selector": "#app-created-by"
+    },
+    {
+      "id": "instruction",
+      "label": "Instruction",
+      "type": "text",
+      "value": "Rangez les chiffres de 1 à 16 dans l'ordre. Le premier à finir gagne !",
+      "selector": "#start-instruction"
+    },
+    {
+      "id": "rules",
+      "label": "Règles du Jeu",
+      "type": "text",
+      "value": "1. Chaque joueur dispose de 20 casiers et 16 cubes numérotés.\n2. Glissez les cubes vers les casiers correspondants (1 à 16).\n3. Les cubes mal placés s'affichent en rouge.\n4. Le premier à ranger tous ses numéros correctement gagne la partie !",
+      "selector": "#display-rules"
+    },
+    {
+      "id": "email",
+      "label": "Email Support",
+      "type": "text",
+      "value": "admin@jeu.com",
+      "selector": "#input-email",
+      "property": "value"
+    },
+    {
+      "id": "admin_code_save",
+      "label": "Code Admin (6 chiffres)",
+      "type": "text",
+      "value": "123456",
+      "path": "appState.admin.code"
+    },
+    {
+      "id": "admin_security_q",
+      "label": "Question de Sécurité",
+      "type": "text",
+      "value": "Quel est votre pseudonyme principal ?",
+      "path": "appState.admin.securityQuestion"
+    },
+    {
+      "id": "admin_security_a",
+      "label": "Réponse de Sécurité",
+      "type": "text",
+      "value": "Admin",
+      "path": "appState.admin.securityAnswer"
+    }
+  ],
+  "colors": [
+    {
+      "id": "p1",
+      "label": "Couleur Joueur 1",
+      "type": "color",
+      "cssVar": "--p1-color",
+      "value": "#4F46E5"
+    },
+    {
+      "id": "p1_cube",
+      "label": "Couleur Cube J1",
+      "type": "color",
+      "cssVar": "--p1-cube-bg",
+      "value": "#FFFFFF"
+    },
+    {
+      "id": "p2",
+      "label": "Couleur Joueur 2",
+      "type": "color",
+      "cssVar": "--p2-color",
+      "value": "#E11D48"
+    },
+    {
+      "id": "p2_cube",
+      "label": "Couleur Cube J2",
+      "type": "color",
+      "cssVar": "--p2-cube-bg",
+      "value": "#FFFFFF"
+    },
+    {
+      "id": "slot_bg",
+      "label": "Couleur Casiers",
+      "type": "color",
+      "cssVar": "--slot-bg",
+      "value": "#F1F5F9"
+    }
+  ],
+  "music": [
+    {
+      "id": "bgm",
+      "label": "Background Music",
+      "type": "audio",
+      "value": "https://prod-data.sekai.chat/aiu-bgm/1e978ac6-6cf0-4c11-b821-c2dbca52810e_Race Gurram-SenSongsMp3.Com_normalized.mp3",
+      "name": "",
+      "selector": "#music-bgm"
+    }
+  ],
+  "sfx": [
+    {
+      "id": "win",
+      "label": "Win Sound",
+      "type": "audio",
+      "value": "https://prod-data.sekai.chat/aiu-music-sfx/472_Roblox_Old_Winning_Sound_04bbc616bbd24ce7a6315d04ee956fed.mp3",
+      "name": "",
+      "selector": "#sfx-win"
+    },
+    {
+      "id": "place",
+      "label": "Place Sound",
+      "type": "audio",
+      "value": "https://prod-data.sekai.chat/aiu-music-sfx/674_Duolingo_Correct_SFX_1a449d3ba92041239ee10d2ef59f3c17.mp3",
+      "name": "",
+      "selector": "#sfx-place"
+    },
+    {
+      "id": "wrong",
+      "label": "Error Sound",
+      "type": "audio",
+      "value": "https://prod-data.sekai.chat/aiu-music-sfx/48/error_sound_xh_01_bf8135fce2540c5bb191244ff9bb459e.mp3",
+      "name": "",
+      "selector": "#sfx-wrong"
+    }
+  ],
+  "images": [
+    {
+      "id": "logo",
+      "label": "Logo du Jeu",
+      "type": "image",
+      "property": "src",
+      "value": "",
+      "description": "Un logo carré ou circulaire pour le jeu",
+      "selector": "#app-logo"
+    }
+  ],
+  "videos": [],
+  "prompts": [],
+  "voices": []
+};
+
+        // Core App State
+        window.appState = {
+            config: {
+                dragSpeed: 0.1
+            },
+            game: {
+                mode: 'multi',
+                isPlaying: false,
+                startTime: 0,
+                lastCorrectMoveTime: 0,
+                p1: { pseudo: 'Joueur 1', board: Array(20).fill(null), cubes: [], drawPile: [], activeCube: null, scoreCount: 0 },
+                p2: { pseudo: 'Joueur 2', board: Array(20).fill(null), cubes: [], drawPile: [], activeCube: null, scoreCount: 0 }
+            },
+            admin: {
+                code: '123456',
+                securityQuestion: 'Quel est votre pseudonyme principal ?',
+                securityAnswer: 'Admin'
+            }
+        };
+
+        // Helpers
+        function getConfig(category, id) { return window.sekaiEditable[category]?.find(i => i.id === id)?.value; }
+        
+        function setNestedValue(obj, path, value) {
+            const parts = path.split('.');
+            let current = obj;
+            for (let i = 0; i < parts.length - 1; i++) {
+                if (!current[parts[i]]) current[parts[i]] = {};
+                current = current[parts[i]];
+            }
+            current[parts[parts.length - 1]] = value;
+        }
+
+        function applyAllEditableValues() {
+            window.sekaiEditable.tune?.forEach(t => { if (t.path) setNestedValue(window, t.path, t.value); });
+            window.sekaiEditable.colors?.forEach(c => { if (c.cssVar) document.documentElement.style.setProperty(c.cssVar, c.value); });
+            window.sekaiEditable.images?.forEach(img => {
+                if (img.selector) {
+                    const el = document.querySelector(img.selector);
+                    if (el && img.value) {
+                        el.src = img.value;
+                        el.parentElement.classList.remove('hidden');
+                    }
+                }
+            });
+            window.sekaiEditable.text?.forEach(t => {
+                if (t.selector) {
+                    const el = document.querySelector(t.selector);
+                    if (el) {
+                        if (t.property === 'value') el.value = t.value; // For inputs
+                        else if (t.property === 'placeholder') el.placeholder = t.value;
+                        else el.textContent = t.value;
+                    }
+                }
+            });
+            window.sekaiEditable.music?.forEach(m => {
+                if (m.selector) {
+                    const el = document.querySelector(m.selector);
+                    if (el && el.src !== m.value) { el.src = m.value; el.load(); }
+                }
+            });
+            window.sekaiEditable.sfx?.forEach(s => {
+                if (s.selector) {
+                    const el = document.querySelector(s.selector);
+                    if (el && el.src !== s.value) { el.src = s.value; el.load(); }
+                }
+            });
+        }
+
+        // Preview Editing API
+        (function setupPreviewEditingAPI() {
+            window.addEventListener('message', (event) => {
+                const msg = event.data;
+                if (msg?.origin !== 'sekai_gaming_iframe_api') return;
+                
+                switch (msg.type) {
+                    case 'apply_change':
+                        const success = applySingleChange(msg.data.id, msg.data.value);
+                        window.parent.postMessage({ origin: 'sekai_gaming_iframe_api', type: 'receive_apply_change', taskId: msg.taskId, data: { success } }, '*');
+                        break;
+                    case 'get_editable_metadata':
+                        window.parent.postMessage({ origin: 'sekai_gaming_iframe_api', type: 'receive_editable_metadata', taskId: msg.taskId, data: window.sekaiEditable || {} }, '*');
+                        break;
+                    case 'get_current_html':
+                        window.parent.postMessage({ origin: 'sekai_gaming_iframe_api', type: 'receive_current_html', taskId: msg.taskId, data: { html: document.documentElement.outerHTML } }, '*');
+                        break;
+                    case 'reset_changes':
+                        location.reload();
+                        break;
+                }
+            });
+
+            function applySingleChange(id, value) {
+                const categories = ['tune', 'images', 'videos', 'music', 'sfx', 'colors', 'text', 'prompts', 'voices'];
+                for (const cat of categories) {
+                    const item = window.sekaiEditable[cat]?.find(i => i.id === id);
+                    if (!item) continue;
+                    item.value = value;
+                    if (item.cssVar) document.documentElement.style.setProperty(item.cssVar, value);
+                    else if (item.path) setNestedValue(window, item.path, value);
+                    else if (item.selector) {
+                        const el = document.querySelector(item.selector);
+                        if (!el) return false;
+                        if (el.tagName === 'AUDIO') { const wasPlaying = !el.paused; el.src = value; el.load(); if(wasPlaying) el.play().catch(()=>{}); }
+                        else if (item.property === 'value') el.value = value;
+                        else el.textContent = value;
+                    }
+                    return true;
+                }
+                return false;
+            }
+        })();
+
+        // Sekai Iframe Message API Helper
+        function sendMessage(type, data, expectResponse = false, taskId = null) {
+            const id = taskId || crypto.randomUUID();
+            window.parent.postMessage({
+                origin: 'sekai_gaming_iframe_api',
+                type: type,
+                taskId: id,
+                data: data
+            }, '*');
+            return id;
+        }
+
+        // Audio Unlock
+        (function() {
+            let audioUnlocked = false;
+            function unlockAudioContext() {
+                if (audioUnlocked) return;
+                if ('audioSession' in window.navigator) window.navigator.audioSession.type = "playback";
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (AudioContext) {
+                    const ctx = new AudioContext();
+                    if (ctx.state === 'suspended') ctx.resume();
+                    const osc = ctx.createOscillator();
+                    osc.connect(ctx.destination);
+                    osc.start(0);
+                    osc.stop(0.001);
+                }
+                const audio = new Audio();
+                audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+                audio.play().catch(()=>{});
+                audioUnlocked = true;
+            }
+            window.addEventListener('message', (e) => {
+                if(e.data?.origin === 'sekai_gaming_iframe_api' && e.data?.type === 'receive_audio_unlock') unlockAudioContext();
+            });
+            ['touchstart', 'click', 'keydown'].forEach(evt => document.addEventListener(evt, unlockAudioContext, { once: true }));
+        })();
+
+        function initBGM() {
+            const el = document.getElementById('music-bgm');
+            if (!el?.src) return;
+            el.loop = true;
+            el.volume = 0.5;
+            const play = () => el.play().catch(() => {
+                document.addEventListener('touchstart', play, { once: true });
+                document.addEventListener('click', play, { once: true });
+            });
+            play();
+        }
+
+        function playSfx(id) {
+            const el = document.getElementById(id);
+            if(el) { el.currentTime = 0; el.play().catch(()=>{}); }
+        }
+
+        // --- GAME LOGIC ---
+
+        const TOTAL_SLOTS = 20;
+        const WIN_COUNT = 16;
+        const CUBES = 16;
+
+        let activeDrags = new Map(); // pointerId -> { element, originX, originY, startX, startY, zoneId }
+        let adminSecretTimer = null;
+
+        function initApp() {
+            applyAllEditableValues();
+            initBGM();
+            
+            // Generate Grids
+            createGrid('p1-grid', 'p1');
+            createGrid('p2-grid', 'p2');
+
+            // Setup Secret Admin Trigger (Long press on title for 3 seconds)
+            const titleEl = document.getElementById('app-title');
+            if (titleEl) {
+                titleEl.addEventListener('pointerdown', (e) => {
+                    adminSecretTimer = setTimeout(() => {
+                        sendMessage('gen_vibration', { duration: 100 });
+                        showAdmin();
+                    }, 3000);
+                });
+                const cancelSecret = () => {
+                    if (adminSecretTimer) {
+                        clearTimeout(adminSecretTimer);
+                        adminSecretTimer = null;
+                    }
+                };
+                titleEl.addEventListener('pointerup', cancelSecret);
+                titleEl.addEventListener('pointerleave', cancelSecret);
+                titleEl.addEventListener('pointercancel', cancelSecret);
+            }
+        }
+
+        function createGrid(containerId, playerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            
+            // Create 20 slots
+            for(let i = 0; i < TOTAL_SLOTS; i++) {
+                const slot = document.createElement('div');
+                slot.className = 'slot';
+                slot.dataset.index = i;
+                slot.dataset.player = playerId;
+                
+                // Slots 1-16 have numbers inscribed (win condition)
+                // Slots 17-20 are empty/buffer
+                if(i < WIN_COUNT) {
+                    slot.textContent = i + 1;
+                    slot.style.color = '#CBD5E1'; // faint number
+                } else {
+                    slot.classList.add('buffer-slot');
+                }
+                
+                container.appendChild(slot);
+            }
+        }
+
+        function showPlayerSetup() {
+            document.getElementById('screen-player-setup').classList.remove('hidden-anim');
+        }
+
+        function hidePlayerSetup() {
+            document.getElementById('screen-player-setup').classList.add('hidden-anim');
+        }
+
+        function setMode(mode) {
+            window.appState.game.mode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => {
+                b.classList.remove('btn-primary');
+                b.classList.add('btn-secondary');
+            });
+            document.getElementById('mode-' + mode).classList.remove('btn-secondary');
+            document.getElementById('mode-' + mode).classList.add('btn-primary');
+            
+            const p2Section = document.getElementById('p2-setup-section');
+            if (mode === 'solo' || mode === 'ai') p2Section.classList.add('hidden');
+            else p2Section.classList.remove('hidden');
+        }
+
+        function startGame() {
+            const p1PseudoInput = document.getElementById('p1-pseudo').value;
+            const p1Name = document.getElementById('p1-name').value;
+            const p1Pseudo = p1PseudoInput || p1Name || 'Joueur 1';
+
+            const p2PseudoInput = document.getElementById('p2-pseudo').value;
+            const p2Name = document.getElementById('p2-name').value;
+            let p2Pseudo = p2PseudoInput || p2Name || 'Joueur 2';
+            
+            if (window.appState.game.mode === 'ai') p2Pseudo = "Ordinateur";
+            
+            window.appState.game.p1.pseudo = p1Pseudo;
+            window.appState.game.p2.pseudo = p2Pseudo;
+            
+            document.getElementById('p1-pseudo-display').textContent = p1Pseudo;
+            document.getElementById('p2-pseudo-display').textContent = p2Pseudo;
+
+            document.getElementById('screen-start').classList.add('hidden-anim');
+            document.getElementById('screen-player-setup').classList.add('hidden-anim');
+            
+            window.appState.game.isPlaying = true;
+            window.appState.game.startTime = Date.now();
+            window.appState.game.lastCorrectMoveTime = Date.now();
+            window.appState.game.p1.board.fill(null);
+            window.appState.game.p2.board.fill(null);
+
+            spawnCubes('p1-zone', 'p1');
+            
+            const p2Zone = document.getElementById('p2-zone');
+            if (window.appState.game.mode === 'solo') {
+                p2Zone.style.display = 'none';
+                document.querySelector('.game-divider').style.display = 'none';
+            } else {
+                p2Zone.style.display = 'flex';
+                document.querySelector('.game-divider').style.display = 'block';
+                spawnCubes('p2-zone', 'p2');
+                if (window.appState.game.mode === 'ai') startAI();
+            }
+            
+            const winScreen = document.getElementById('screen-win');
+            winScreen.classList.add('hidden');
+            winScreen.style.opacity = '0';
+        }
+
+        function startAI() {
+            const aiInterval = setInterval(() => {
+                if (!window.appState.game.isPlaying || window.appState.game.mode !== 'ai') {
+                    clearInterval(aiInterval);
+                    return;
+                }
+                
+                // AI logic for draw-pile: try to place current active cube
+                const active = window.appState.game.p2.activeCube;
+                if (active) {
+                    const num = parseInt(active.dataset.number);
+                    const targetSlot = num - 1; // Ideal spot
+                    
+                    const board = window.appState.game.p2.board;
+                    const occupantNum = board[targetSlot];
+                    
+                    if (!occupantNum) {
+                        // Place if empty
+                        placeCubeInSlot(active, targetSlot, 'p2');
+                        window.appState.game.p2.activeCube = null;
+                        drawNextCube('p2');
+                    } else {
+                        // If occupied, move to a random empty buffer slot or swap
+                        // For AI simplicity: move to any empty slot
+                        let emptySlot = board.findIndex(v => v === null);
+                        if (emptySlot !== -1) {
+                            placeCubeInSlot(active, emptySlot, 'p2');
+                            window.appState.game.p2.activeCube = null;
+                            drawNextCube('p2');
+                        }
+                    }
+                } else {
+                    // If no active cube, maybe shuffle existing ones that are wrong
+                    const p2Zone = document.getElementById('p2-zone');
+                    const cubes = Array.from(p2Zone.querySelectorAll('.cube'));
+                    const wrongCubes = cubes.filter(c => c.classList.contains('wrong'));
+                    if (wrongCubes.length > 0 && Math.random() > 0.7) {
+                        const c = wrongCubes[Math.floor(Math.random() * wrongCubes.length)];
+                        const target = parseInt(c.dataset.number) - 1;
+                        if (window.appState.game.p2.board[target] === null) {
+                            const old = parseInt(c.dataset.currentSlot);
+                            window.appState.game.p2.board[old] = null;
+                            placeCubeInSlot(c, target, 'p2');
+                        }
+                    }
+                }
+            }, 1200);
+        }
+
+        function spawnCubes(zoneId, playerId) {
+            const zone = document.getElementById(zoneId);
+            const existing = zone.querySelectorAll('.cube');
+            existing.forEach(e => e.remove());
+
+            window.appState.game[playerId].board.fill(null);
+            window.appState.game[playerId].activeCube = null;
+            window.appState.game[playerId].scoreCount = 0;
+            
+            // Initialize draw pile
+            const numbers = Array.from({length: 16}, (_, i) => i + 1);
+            window.appState.game[playerId].drawPile = numbers.sort(() => Math.random() - 0.5);
+            
+            // Clear slot visual states
+            const grid = document.getElementById(playerId + '-grid');
+            if (grid) Array.from(grid.children).forEach(s => s.classList.remove('completed'));
+
+            updateDeckUI(playerId);
+            drawNextCube(playerId);
+        }
+
+        function updateDeckUI(playerId) {
+            const countEl = document.getElementById(playerId + '-deck-count');
+            if (countEl) countEl.textContent = window.appState.game[playerId].drawPile.length;
+            const scoreEl = document.getElementById(playerId + '-score-count');
+            if (scoreEl) scoreEl.textContent = window.appState.game[playerId].scoreCount;
+        }
+
+        function drawNextCube(playerId) {
+            const pile = window.appState.game[playerId].drawPile;
+            if (pile.length === 0) it;
+            
+            const num = pile.pop();
+            const cube = createCube(num, playerId);
+            cube.dataset.isFromPile = "true";
+            window.appState.game[playerId].activeCube = cube;
+            
+            // Position it in the draw pile area
+            const pileContainer = document.getElementById(playerId + '-draw-pile');
+            const zone = document.getElementById(playerId + '-zone');
+            
+            const pRect = pileContainer.getBoundingClientRect();
+            const zRect = zone.getBoundingClientRect();
+            
+            // Local coords
+            const left = pileContainer.offsetLeft;
+            const top = pileContainer.offsetTop;
+            
+            cube.style.width = (pileContainer.offsetWidth - 4) + 'px';
+            cube.style.height = (pileContainer.offsetHeight - 4) + 'px';
+            
+            requestAnimationFrame(() => {
+                cube.style.transform = `translate(${left + 2}px, ${top + 2}px)`;
+                cube.style.boxShadow = '0 4px 0 #94A3B8';
+            });
+            
+            updateDeckUI(playerId);
+        }
+
+        function createCube(number, playerId) {
+            const cube = document.createElement('div');
+            cube.className = 'cube';
+            cube.textContent = number;
+            cube.dataset.number = number;
+            cube.dataset.player = playerId;
+            
+            // Touch handlers
+            cube.addEventListener('pointerdown', onPointerDown);
+            
+            // Append to zone (which is relative)
+            document.getElementById(playerId + '-zone').appendChild(cube);
+            return cube;
+        }
+
+        function getSlotRect(slotIndex, playerId) {
+            const grid = document.getElementById(playerId + '-grid');
+            const slot = grid.children[slotIndex];
+            const zone = document.getElementById(playerId + '-zone');
+            
+            // Calculate relative position within zone
+            const slotRect = slot.getBoundingClientRect();
+            const zoneRect = zone.getBoundingClientRect();
+            
+            // Handle rotation for P2?
+            // Since P2 zone is rotated 180deg via CSS transform, 
+            // getBoundingClientRect returns screen coords which accounts for transform.
+            // But dragging logic needs to be careful.
+            
+            // For placement, we just want to center the cube over the slot.
+            // Since cubes are children of zone, we need coordinates relative to zone.
+            
+            // For P2 (rotated):
+            // The top-left of the visual slot is different in local coords.
+            
+            // Easiest way: Use offsetLeft/offsetTop relative to the grid, then add grid offset
+            // But grid is flex/grid.
+            
+            return {
+                left: slot.offsetLeft + grid.offsetLeft,
+                top: slot.offsetTop + grid.offsetTop,
+                width: slot.offsetWidth,
+                height: slot.offsetHeight,
+                el: slot
+            };
+        }
+
+        function placeCubeInSlot(cube, slotIndex, playerId) {
+            const rect = getSlotRect(slotIndex, playerId);
+            
+            // Occupy slot space fully
+            const cubeW = rect.width;
+            const cubeH = rect.height;
+            
+            const offsetX = rect.left;
+            const offsetY = rect.top;
+            
+            cube.style.width = cubeW + 'px';
+            cube.style.height = cubeH + 'px';
+            
+            // Use requestAnimationFrame to ensure style applies cleanly
+            requestAnimationFrame(() => {
+                cube.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+            });
+            
+            // Phone Keypad button styling
+            if (cube.classList.contains('correct')) {
+                cube.style.boxShadow = '0 2px 0 #166534';
+                cube.style.border = '2px solid #22C55E';
+            } else if (cube.classList.contains('wrong')) {
+                cube.style.boxShadow = '0 2px 0 #991B1B';
+                cube.style.border = '2px solid #EF4444';
+            } else {
+                cube.style.boxShadow = '0 3px 0 #CBD5E1';
+                cube.style.border = '1px solid #E2E8F0';
+            }
+            
+            // Update Logic
+            window.appState.game[playerId].board[slotIndex] = parseInt(cube.dataset.number);
+            cube.dataset.currentSlot = slotIndex;
+            
+            // Check correctness
+            validateCube(cube, slotIndex);
+        }
+
+        function validateCube(cube, slotIndex) {
+            const num = parseInt(cube.dataset.number);
+            const targetNum = slotIndex + 1;
+            const player = cube.dataset.player;
+            
+            if (slotIndex < WIN_COUNT) {
+                if (num === targetNum) {
+                    // Logic for "Correct Case"
+                    const now = Date.now();
+                    const isFast = (now - window.appState.game.lastCorrectMoveTime) < 3000;
+                    window.appState.game.lastCorrectMoveTime = now;
+
+                    cube.classList.add('correct');
+                    cube.classList.remove('wrong');
+                    
+                    if (isFast) showCongrats(cube);
+                    
+                    // NEW MECHANIC: Remove from grid and stack on score pile
+                    handleScoreStacking(cube, player, slotIndex);
+                    
+                    checkWin(player);
+                } else {
+                    cube.classList.add('wrong');
+                    cube.classList.remove('correct');
+                    playSfx('wrong');
+                }
+            } else {
+                cube.classList.remove('correct', 'wrong');
+            }
+        }
+
+        function handleScoreStacking(cube, playerId, slotIndex) {
+            const scorePile = document.getElementById(playerId + '-score-pile');
+            const gridSlot = document.getElementById(playerId + '-grid').children[slotIndex];
+            
+            // Mark slot as completed visually
+            gridSlot.classList.add('completed');
+            
+            // Stacking animation
+            cube.classList.add('stacking');
+            
+            const destX = scorePile.offsetLeft + 2;
+            const destY = scorePile.offsetTop + 2;
+            
+            cube.style.transform = `translate(${destX}px, ${destY}px) scale(0.6)`;
+            cube.style.opacity = '0';
+            
+            // Logic: Increment score count
+            window.appState.game[playerId].scoreCount++;
+            updateDeckUI(playerId);
+            
+            // Cleanup cube after animation
+            setTimeout(() => {
+                cube.remove();
+            }, 600);
+        }
+
+        function showCongrats(cube) {
+            const rect = cube.getBoundingClientRect();
+            const text = document.createElement('div');
+            text.className = 'congrats-text';
+            const phrases = ["Super !", "Rapide !", "Génial !", "Bravo !"];
+            text.textContent = phrases[Math.floor(Math.random() * phrases.length)];
+            text.style.left = (rect.left + rect.width / 2 - 20) + 'px';
+            text.style.top = (rect.top) + 'px';
+            document.body.appendChild(text);
+            setTimeout(() => text.remove(), 1000);
+        }
+
+        function checkWin(playerId) {
+            // New logic: Check scoreCount instead of board because cubes are removed
+            const won = window.appState.game[playerId].scoreCount === WIN_COUNT;
+            
+            if (won && window.appState.game.isPlaying) {
+                gameWin(playerId);
+            } else {
+                // If just placed correct, slight sound
+                playSfx('place');
+            }
+        }
+
+        function gameWin(playerId) {
+            window.appState.game.isPlaying = false;
+            playSfx('win');
+            
+            // Confetti
+            confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+            
+            // Calculate Time
+            const duration = Math.floor((Date.now() - window.appState.game.startTime) / 1000);
+            const mins = Math.floor(duration / 60);
+            const secs = duration % 60;
+            const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+            
+            // Show Overlay
+            const overlay = document.getElementById('screen-win');
+            const card = document.getElementById('win-card');
+            const title = document.getElementById('win-title');
+            
+            document.getElementById('win-score-display').textContent = timeStr;
+            
+            // Get proper winner name
+            const winnerPseudo = window.appState.game[playerId].pseudo;
+            title.textContent = (winnerPseudo === "Ordinateur" ? "L'ORDINATEUR" : winnerPseudo.toUpperCase()) + " A GAGNÉ !";
+            title.className = playerId === 'p1' ? 'text-2xl font-black text-indigo-600 mb-2' : 'text-2xl font-black text-rose-600 mb-2';
+            
+            // Rotate card for the winner
+            if (playerId === 'p2') {
+                card.style.transform = 'rotate(180deg)';
+            } else {
+                card.style.transform = 'rotate(0deg)';
+            }
+            
+            // Show Overlay
+            overlay.classList.remove('hidden');
+            overlay.style.pointerEvents = 'auto';
+            overlay.style.display = 'flex'; // Ensure display flex
+            void overlay.offsetWidth;
+            overlay.style.opacity = '1';
+
+            // Visual Countdown for auto-restart
+            let timeLeft = 5;
+            const subtitle = overlay.querySelector('p.text-slate-500');
+            const originalSubtitle = subtitle.textContent;
+            
+            const countdownInterval = setInterval(() => {
+                timeLeft--;
+                if (timeLeft <= 0) {
+                    clearInterval(countdownInterval);
+                    return;
+                }
+                subtitle.textContent = `Redémarrage dans ${timeLeft}s...`;
+            }, 1000);
+            subtitle.textContent = `Redémarrage dans ${timeLeft}s...`;
+
+            // Auto-restart logic after 5 seconds
+            const autoRestartTimer = setTimeout(() => {
+                clearInterval(countdownInterval);
+                if (!overlay.classList.contains('hidden')) {
+                    subtitle.textContent = originalSubtitle;
+                    resetGame();
+                }
+            }, 5000);
+            
+            overlay.dataset.restartTimerId = autoRestartTimer;
+            overlay.dataset.intervalId = countdownInterval;
+        }
+
+        // --- DRAG AND DROP ENGINE ---
+        
+        function onPointerDown(e) {
+            if (!window.appState.game.isPlaying) return;
+            
+            e.preventDefault(); // Prevent scroll
+            const cube = e.currentTarget;
+            
+            // Only allow owner to drag
+            // (Optional: enforce simple turns? No, simultaneous is better for face-to-face chaos)
+            
+            cube.setPointerCapture(e.pointerId);
+            cube.classList.add('dragging');
+            
+            // Read current transform to get start X/Y
+            // transform matrix is usually: matrix(1, 0, 0, 1, x, y)
+            const style = window.getComputedStyle(cube);
+            const matrix = new WebKitCSSMatrix(style.transform);
+            
+            activeDrags.set(e.pointerId, {
+                element: cube,
+                startX: e.clientX,
+                startY: e.clientY,
+                initialX: matrix.m41,
+                initialY: matrix.m42,
+                playerId: cube.dataset.player
+            });
+            
+            // Lift effect
+            playSfx('place'); // Light click
+            
+            cube.addEventListener('pointermove', onPointerMove);
+            cube.addEventListener('pointerup', onPointerUp);
+            cube.addEventListener('pointercancel', onPointerUp);
+        }
+
+        function onPointerMove(e) {
+            if (!activeDrags.has(e.pointerId)) return;
+            
+            const drag = activeDrags.get(e.pointerId);
+            const dx = e.clientX - drag.startX;
+            const dy = e.clientY - drag.startY;
+            
+            // For P2 (rotated), the inputs are inverted visually but clientX is screen coords.
+            // But since we are translating the element which is inside a rotated container...
+            // If container is rotated 180deg: Moving finger UP (screen Y decreases) -> Element should move visually UP.
+            // In a rotated container, "UP" is +Y. So we might need to invert delta.
+            
+            let moveX = drag.initialX + dx;
+            let moveY = drag.initialY + dy;
+            
+            if (drag.playerId === 'p2') {
+                 // The container is rotated 180deg. 
+                 // Moving finger RIGHT (+X screen) -> Visually RIGHT.
+                 // In rotated local coords, RIGHT is -X.
+                 // Moving finger DOWN (+Y screen) -> Visually DOWN.
+                 // In rotated local coords, DOWN is -Y.
+                 moveX = drag.initialX - dx;
+                 moveY = drag.initialY - dy;
+            }
+            
+            drag.element.style.transform = `translate(${moveX}px, ${moveY}px)`;
+        }
+
+        function onPointerUp(e) {
+            if (!activeDrags.has(e.pointerId)) return;
+            
+            const drag = activeDrags.get(e.pointerId);
+            const cube = drag.element;
+            const playerId = drag.playerId;
+            
+            cube.releasePointerCapture(e.pointerId);
+            cube.classList.remove('dragging');
+            cube.removeEventListener('pointermove', onPointerMove);
+            cube.removeEventListener('pointerup', onPointerUp);
+            cube.removeEventListener('pointercancel', onPointerUp); // cleanup
+            
+            activeDrags.delete(e.pointerId);
+            
+            // Use the pointer's release position for more intuitive 'hit' detection
+            const dropX = e.clientX;
+            const dropY = e.clientY;
+            
+            const grid = document.getElementById(playerId + '-grid');
+            const slots = Array.from(grid.children);
+            
+            let bestSlot = null;
+            let minDist = Infinity;
+            
+            slots.forEach(slot => {
+                const r = slot.getBoundingClientRect();
+                const slotCX = r.left + r.width/2;
+                const slotCY = r.top + r.height/2;
+                
+                // Distance from pointer to slot center
+                const d = Math.hypot(dropX - slotCX, dropY - slotCY);
+                
+                // Larger threshold (1.5x slot width) for easier snapping on mobile
+                if (d < r.width * 1.5 && d < minDist) {
+                    minDist = d;
+                    bestSlot = slot;
+                }
+            });
+            
+            // LOGIC:
+            // 1. If bestSlot found AND empty -> Move there.
+            // 2. If bestSlot found AND occupied -> Swap? Or bounce?
+            //    -> Prompt asked "If wrong slot... highlight red". Implies it STAYS there.
+            //    -> So swapping is good UX.
+            // 3. If no slot -> bounce back to start.
+            
+            const oldSlotIndex = parseInt(cube.dataset.currentSlot);
+            const wasInPile = cube.dataset.isFromPile === "true";
+            
+            if (bestSlot) {
+                const newSlotIndex = parseInt(bestSlot.dataset.index);
+                const board = window.appState.game[playerId].board;
+                const occupantNumber = board[newSlotIndex];
+                
+                if (occupantNumber && occupantNumber !== parseInt(cube.dataset.number)) {
+                    // Allow swapping even if the cube is fresh from the pile
+                    const zone = document.getElementById(playerId + '-zone');
+                    const allCubes = zone.querySelectorAll('.cube');
+                    let otherCube = Array.from(allCubes).find(c => parseInt(c.dataset.currentSlot) === newSlotIndex);
+                    
+                    if (otherCube) {
+                        if (wasInPile) {
+                            // If from pile, the 'swapped' cube moves to the pile position!
+                            const pc = document.getElementById(playerId + '-draw-pile');
+                            otherCube.dataset.isFromPile = "true";
+                            otherCube.style.transform = `translate(${pc.offsetLeft + 2}px, ${pc.offsetTop + 2}px)`;
+                            otherCube.classList.remove('correct', 'wrong');
+                            window.appState.game[playerId].activeCube = otherCube;
+                            
+                            delete cube.dataset.isFromPile;
+                            placeCubeInSlot(cube, newSlotIndex, playerId);
+                        } else {
+                            placeCubeInSlot(otherCube, oldSlotIndex, playerId);
+                            placeCubeInSlot(cube, newSlotIndex, playerId);
+                        }
+                    }
+                } else {
+                    // Empty slot
+                    if (!wasInPile) board[oldSlotIndex] = null;
+                    placeCubeInSlot(cube, newSlotIndex, playerId);
+                    
+                    if (wasInPile) {
+                        delete cube.dataset.isFromPile;
+                        window.appState.game[playerId].activeCube = null;
+                        drawNextCube(playerId);
+                    }
+                }
+            } else {
+                // Bounce back
+                if (wasInPile) {
+                    const pc = document.getElementById(playerId + '-draw-pile');
+                    cube.style.transform = `translate(${pc.offsetLeft + 2}px, ${pc.offsetTop + 2}px)`;
+                } else {
+                    placeCubeInSlot(cube, oldSlotIndex, playerId);
+                }
+            }
+        }
+
+        // --- ADMIN & UI FUNCTIONS ---
+
+        function toggleRulesModal(show) {
+            const modal = document.getElementById('modal-rules');
+            if (show) {
+                modal.classList.remove('hidden');
+                modal.style.pointerEvents = 'auto';
+                void modal.offsetWidth;
+                modal.style.opacity = '1';
+                // Sync display text with current rule state
+                document.getElementById('display-rules').textContent = document.getElementById('input-rules').value || getConfig('text', 'rules');
+            } else {
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
+
+        function handleImageUpload(input, targetId) {
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = document.getElementById(targetId);
+                    img.src = e.target.result;
+                    img.parentElement.classList.remove('hidden');
+                    // Sync to metadata
+                    applySingleChange('logo', e.target.result);
+                }
+                reader.readAsDataURL(input.files[0]);
+            }
+        }
+
+        function showAdmin() {
+            // Admin Access Logic - Simplification to 6-digit code
+            const accessCode = prompt("Entrez le code d'accès (6 chiffres) :\n(Tapez 'OUBLI' si vous avez oublié votre code)");
+            if (accessCode === null) return;
+            
+            const inputCode = accessCode.trim();
+            const correctCode = String(getConfig('text', 'admin_code_save') || window.appState.admin.code || "123456").trim();
+            
+            if (inputCode.toUpperCase() === 'OUBLI') {
+                const question = getConfig('text', 'admin_security_q') || window.appState.admin.securityQuestion;
+                const answer = getConfig('text', 'admin_security_a') || window.appState.admin.securityAnswer;
+                
+                const userAnswer = prompt(`Question de sécurité :\n${question}`);
+                if (userAnswer && userAnswer.trim().toLowerCase() === String(answer).trim().toLowerCase()) {
+                    const newCode = Math.floor(100000 + Math.random() * 900000).toString();
+                    applySingleChange('admin_code_save', newCode);
+                    window.appState.admin.code = newCode;
+                    alert(`Réinitialisation réussie !\nVotre nouveau code est : ${newCode}\nVeuillez le noter.`);
+                    return;
+                } else {
+                    alert("Réponse incorrecte.");
+                    return;
+                }
+            }
+
+            if (inputCode !== correctCode) {
+                alert("Code incorrect. Accès refusé.");
+                return;
+            }
+
+            // Fill inputs from current state
+            document.getElementById('admin-access-code').value = correctCode;
+            document.getElementById('admin-security-q-input').value = getConfig('text', 'admin_security_q') || window.appState.admin.securityQuestion;
+            document.getElementById('admin-security-a-input').value = getConfig('text', 'admin_security_a') || window.appState.admin.securityAnswer;
+            document.getElementById('input-game-title').value = document.getElementById('app-title').textContent;
+            document.getElementById('input-game-subtitle').value = document.getElementById('app-subtitle').textContent;
+            document.getElementById('input-created-by').value = document.getElementById('app-created-by').textContent;
+            document.getElementById('input-rules').value = document.getElementById('display-rules').textContent;
+
+            // Fill color pickers from current variables
+            const style = getComputedStyle(document.documentElement);
+            document.getElementById('admin-p1-cube').value = style.getPropertyValue('--p1-cube-bg').trim() || '#ffffff';
+            document.getElementById('admin-p2-cube').value = style.getPropertyValue('--p2-cube-bg').trim() || '#ffffff';
+            document.getElementById('admin-slot-bg').value = style.getPropertyValue('--slot-bg').trim() || '#f1f5f9';
+
+            document.getElementById('screen-admin').classList.remove('hidden-anim');
+            document.getElementById('screen-admin').classList.add('visible');
+            document.getElementById('screen-admin').style.pointerEvents = 'auto';
+            document.getElementById('screen-admin').style.opacity = '1';
+        }
+        
+        function hideAdmin() {
+            const el = document.getElementById('screen-admin');
+            el.style.opacity = '0';
+            el.style.pointerEvents = 'none';
+            setTimeout(() => el.classList.add('hidden-anim'), 300);
+        }
+
+        function saveAdminSettings() {
+            const newCode = document.getElementById('admin-access-code').value;
+            const newQ = document.getElementById('admin-security-q-input').value;
+            const newA = document.getElementById('admin-security-a-input').value;
+            
+            const title = document.getElementById('input-game-title').value;
+            const subtitle = document.getElementById('input-game-subtitle').value;
+            const createdBy = document.getElementById('input-created-by').value;
+            const rules = document.getElementById('input-rules').value;
+            
+            // Update metadata FIRST as it is the source of truth
+            if (newCode && newCode.length > 0) {
+                applySingleChange('admin_code_save', newCode);
+                window.appState.admin.code = newCode;
+            }
+            if (newQ) {
+                applySingleChange('admin_security_q', newQ);
+                window.appState.admin.securityQuestion = newQ;
+            }
+            if (newA) {
+                applySingleChange('admin_security_a', newA);
+                window.appState.admin.securityAnswer = newA;
+            }
+
+            // Apply Text Changes
+            applySingleChange('title', title);
+            applySingleChange('subtitle', subtitle);
+            applySingleChange('created_by', createdBy);
+            applySingleChange('rules', rules);
+
+            // Apply Colors
+            const p1Cube = document.getElementById('admin-p1-cube').value;
+            const p2Cube = document.getElementById('admin-p2-cube').value;
+            const slotBg = document.getElementById('admin-slot-bg').value;
+
+            document.documentElement.style.setProperty('--p1-cube-bg', p1Cube);
+            document.documentElement.style.setProperty('--p2-cube-bg', p2Cube);
+            document.documentElement.style.setProperty('--slot-bg', slotBg);
+
+            // Sync with metadata for persistence/preview
+            applySingleChange('p1_cube', p1Cube);
+            applySingleChange('p2_cube', p2Cube);
+            applySingleChange('slot_bg', slotBg);
+            
+            const btn = document.querySelector('#screen-admin .btn-primary');
+            const originalText = btn.textContent;
+            btn.textContent = 'Enregistré !';
+            setTimeout(() => {
+                btn.textContent = originalText;
+                hideAdmin();
+            }, 800);
+        }
+
+        function handleMusicFile(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                const url = URL.createObjectURL(file);
+                
+                const bgm = document.getElementById('music-bgm');
+                bgm.src = url;
+                bgm.load();
+                bgm.play().catch(()=>{});
+                
+                document.getElementById('music-status').textContent = file.name.substring(0, 20) + '...';
+            }
+        }
+        
+        function resetGame() {
+            const overlay = document.getElementById('screen-win');
+            // Cancel auto-restart if manual trigger happens
+            if (overlay.dataset.restartTimerId) {
+                clearTimeout(parseInt(overlay.dataset.restartTimerId));
+                delete overlay.dataset.restartTimerId;
+            }
+            if (overlay.dataset.intervalId) {
+                clearInterval(parseInt(overlay.dataset.intervalId));
+                delete overlay.dataset.intervalId;
+            }
+
+            // Fade out overlay
+            overlay.style.opacity = '0';
+            setTimeout(() => {
+                 overlay.classList.add('hidden');
+                 startGame();
+            }, 300);
+        }
+
+        function backToMenu() {
+            window.appState.game.isPlaying = false;
+            const overlay = document.getElementById('screen-win');
+            if (overlay.dataset.restartTimerId) clearTimeout(parseInt(overlay.dataset.restartTimerId));
+            if (overlay.dataset.intervalId) clearInterval(parseInt(overlay.dataset.intervalId));
+            
+            overlay.style.opacity = '0';
+            setTimeout(() => {
+                 overlay.classList.add('hidden');
+                 document.getElementById('screen-start').classList.remove('hidden-anim');
+            }, 300);
+        }
+
+        async function copySourceCode(btn) {
+            const originalText = btn ? btn.innerHTML : null;
+            
+            try {
+                // Prepend doctype and get current HTML
+                // We use document.documentElement.outerHTML which includes the <html> tag
+                const source = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+                
+                let success = false;
+
+                // Try Primary method: Clipboard API (Requires HTTPS/Secure Context)
+                if (navigator.clipboard && window.isSecureContext) {
+                    try {
+                        await navigator.clipboard.writeText(source);
+                        success = true;
+                    } catch (clipboardErr) {
+                        console.warn("Clipboard API failed, trying fallback...", clipboardErr);
+                    }
+                }
+
+                // Try Fallback method: Temporary Textarea (Works in most WebViews)
+                if (!success) {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = source;
+                    // Ensure it's not visible but part of the DOM
+                    textArea.style.position = "fixed";
+                    textArea.style.left = "-9999px";
+                    textArea.style.top = "-9999px";
+                    textArea.style.opacity = "0";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    try {
+                        success = document.execCommand('copy');
+                    } catch (execErr) {
+                        console.error("execCommand fallback failed", execErr);
+                    }
+                    document.body.removeChild(textArea);
+                }
+
+                if (success) {
+                    if (btn) {
+                        btn.innerHTML = '<i class="fa-solid fa-check mr-1 text-green-500"></i> COPIÉ !';
+                        setTimeout(() => { btn.innerHTML = originalText; }, 2000);
+                    }
+                    alert("Succès ! Le code complet du jeu a été copié dans votre presse-papier.\n\nVous pouvez maintenant le coller dans votre éditeur de texte.");
+                } else {
+                    throw new Error("Toutes les méthodes de copie ont échoué.");
+                }
+            } catch (err) {
+                console.error('Copy operation failed:', err);
+                alert("Désolé, la copie automatique a échoué dans cet environnement.\n\nVeuillez essayer de copier le code directement depuis la discussion avec l'IA.");
+            }
+        }
+
+        async function handleShare() {
+            const btn = document.getElementById('shareBtn');
+            if (btn.dataset.loading === 'true') return;
+            btn.dataset.loading = 'true';
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i>';
+
+            try {
+                const element = document.getElementById('win-card');
+                const jpgImg = await window.snapdom.toJpg(element, {
+                    quality: 0.7,
+                    width: element.offsetWidth * 2,
+                    height: element.offsetHeight * 2,
+                });
+
+                sendMessage('invoke_share', {
+                    title: 'I won the NumRacer Battle!',
+                    coverImageBase64: jpgImg.src
+                });
+            } catch (e) {
+                console.error(e);
+            } finally {
+                btn.dataset.loading = 'false';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-share-nodes mr-1"></i> SHARE';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', initApp);
+
+    </script>
+
+</body></html>
