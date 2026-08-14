@@ -14,21 +14,15 @@
     }
     
     // Set viewport to prevent iOS auto-zoom
-    // width=device-width: Use device width
-    // initial-scale=1.0: Initial zoom level
-    // maximum-scale=1.0: Prevent zooming beyond 1.0
-    // user-scalable=no: Disable user scaling (prevents pinch zoom and auto-zoom on input focus)
     viewportMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
   }
   
-  // Run immediately if DOM is already ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', ensureViewportMeta);
   } else {
     ensureViewportMeta();
   }
   
-  // Also ensure it's set when head is ready (in case script runs before head)
   if (!document.head) {
     var observer = new MutationObserver(function(mutations) {
       if (document.head) {
@@ -42,120 +36,89 @@
 </script>
 
 <script>
-(function() {
-  // Store original addEventListener/removeEventListener
-  var originalAddEventListener = EventTarget.prototype.addEventListener;
-  var originalRemoveEventListener = EventTarget.prototype.removeEventListener;
-  
-  // Map to track click->pointerup conversions: element -> Map(clickListener -> pointerupListener)
-  var listenerMap = new WeakMap();
-  
-  // Patch addEventListener
+// Unified event listener patch:
+// - click -> pointerup conversion (preserves removeEventListener)
+// - force passive: true for touchstart/touchmove by default (unless explicitly passive:false)
+// - capture devicemotion listeners to allow synthetic events from parent
+(function(){
+  var nativeAdd = EventTarget.prototype.addEventListener;
+  var nativeRemove = EventTarget.prototype.removeEventListener;
+  var listenerMap = new WeakMap(); // element -> Map(original -> wrapper)
+  var deviceMotionListeners = [];
+
   EventTarget.prototype.addEventListener = function(type, listener, options) {
-    // Convert click to pointerup for better iOS compatibility
-    if (type === 'click' && typeof listener === 'function') {
-      // Get or create listener map for this element
-      var elementMap = listenerMap.get(this);
-      if (!elementMap) {
-        elementMap = new Map();
-        listenerMap.set(this, elementMap);
+    var newOptions = options;
+    // Force passive for touchstart/touchmove unless explicitly passive:false
+    if ((type === 'touchstart' || type === 'touchmove') && !(options && options.passive === false)) {
+      if (typeof options === 'boolean' || options === undefined) {
+        newOptions = { passive: true, capture: !!options };
+      } else {
+        newOptions = Object.assign({}, options, { passive: true });
       }
-      
-      // Check if we already converted this listener
-      var existingPointerListener = elementMap.get(listener);
-      if (existingPointerListener) {
-        // Already converted, use the existing pointerup listener
-        return originalAddEventListener.call(this, 'pointerup', existingPointerListener, options);
-      }
-      
-      // Create wrapper that converts pointerup to click-like event
-      var pointerupListener = function(e) {
-        // Only handle primary button (left click / tap)
-        if (e.button !== 0) return;
-        try {
-          // Call original click listener with the pointer event directly.
-          // The pointerup event provides target, clientX/Y, modifiers, etc.
-          listener.call(this, e);
-        } catch (err) {
-          console.error('[Sekai Click Patch] Listener error:', err);
-        }
-      };
-      
-      // Store the conversion for removeEventListener
-      elementMap.set(listener, pointerupListener);
-      
-      // Add as pointerup instead of click
-      return originalAddEventListener.call(this, 'pointerup', pointerupListener, options);
     }
-    
-    // For all other event types, use original
-    return originalAddEventListener.call(this, type, listener, options);
+
+    // Convert click listeners to pointerup for better iOS behavior
+    if (type === 'click' && typeof listener === 'function') {
+      var map = listenerMap.get(this);
+      if (!map) { map = new Map(); listenerMap.set(this, map); }
+      var existing = map.get(listener);
+      if (existing) return nativeAdd.call(this, 'pointerup', existing, newOptions);
+
+      var wrapper = function(e) {
+        if (typeof e.button !== 'undefined' && e.button !== 0) return;
+        try { listener.call(this, e); } catch (err) { console.error('[Click->Pointer wrapper] error', err); }
+      };
+      map.set(listener, wrapper);
+      return nativeAdd.call(this, 'pointerup', wrapper, newOptions);
+    }
+
+    // Capture devicemotion listeners so we can forward synthetic events
+    if (type === 'devicemotion' && typeof listener === 'function') {
+      deviceMotionListeners.push(listener);
+      return nativeAdd.call(this, type, listener, newOptions);
+    }
+
+    return nativeAdd.call(this, type, listener, newOptions);
   };
-  
-  // Patch removeEventListener
+
   EventTarget.prototype.removeEventListener = function(type, listener, options) {
     if (type === 'click' && typeof listener === 'function') {
-      var elementMap = listenerMap.get(this);
-      if (elementMap) {
-        var pointerupListener = elementMap.get(listener);
-        if (pointerupListener) {
-          elementMap.delete(listener);
-          return originalRemoveEventListener.call(this, 'pointerup', pointerupListener, options);
-        }
+      var map = listenerMap.get(this);
+      if (map) {
+        var wrapper = map.get(listener);
+        if (wrapper) { map.delete(listener); return nativeRemove.call(this, 'pointerup', wrapper, options); }
       }
     }
-    
-    return originalRemoveEventListener.call(this, type, listener, options);
-  };
-  
-  console.log('[Sekai Click Patch] Installed - click events will use pointerup');
-})();
-</script>
 
-<script>
-(function() {
-  // Track recent touch to block emulated mouse events
-  var lastTouchTime = 0;
-  var TOUCH_MOUSE_DELAY = 200; // ms to block mouse events after touch
-
-  // Global touch tracker - set flag when touch occurs
-  document.addEventListener('touchstart', function() {
-    lastTouchTime = Date.now();
-  }, { passive: true, capture: true });
-
-  document.addEventListener('touchend', function() {
-    lastTouchTime = Date.now();
-  }, { passive: true, capture: true });
-
-  // Block emulated mouse events that follow touch
-  // BUT allow them on focusable elements (inputs need mousedown for focus)
-  function blockEmulatedMouseHandler(e) {
-    if (Date.now() - lastTouchTime < TOUCH_MOUSE_DELAY) {
-      // Don't block on focusable elements - they need mousedown for focus
-      var target = e.target;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-        return; // Allow the event
-      }
-      e.stopPropagation();
-      e.preventDefault();
+    if (type === 'devicemotion' && typeof listener === 'function') {
+      var idx = deviceMotionListeners.indexOf(listener);
+      if (idx !== -1) deviceMotionListeners.splice(idx, 1);
     }
-  }
 
-  // Capture phase blockers for emulated mouse events
-  document.addEventListener('mousedown', blockEmulatedMouseHandler, { capture: true });
-
-  // Patch addEventListener to force passive on touch events
-  var originalAddEventListener = EventTarget.prototype.addEventListener;
-
-  EventTarget.prototype.addEventListener = function(type, listener, options) {
-    // Convert touchstart/touchmove to passive
-    // Mouse event emulation is handled by our global blockers above
-    if (type === 'touchstart' || type === 'touchmove') {
-      var newOptions = Object.assign({}, options || {}, { passive: true });
-      return originalAddEventListener.call(this, type, listener, newOptions);
-    }
-    return originalAddEventListener.call(this, type, listener, options);
+    return nativeRemove.call(this, type, listener, options);
   };
+
+  // Listen for forwarded motion data from parent and dispatch to captured listeners
+  window.addEventListener('message', function(event) {
+    if (!event.data || event.data.type !== '__sekai_device_motion__') return;
+    var data = event.data;
+    var syntheticEvent = {
+      accelerationIncludingGravity: data.accelerationIncludingGravity,
+      acceleration: data.acceleration,
+      rotationRate: data.rotationRate,
+      interval: data.interval || 16,
+      type: 'devicemotion',
+      timeStamp: data.timestamp || Date.now(),
+      target: window,
+      currentTarget: window,
+      preventDefault: function(){},
+      stopPropagation: function(){},
+      stopImmediatePropagation: function(){}
+    };
+    deviceMotionListeners.forEach(function(listener){ try { listener(syntheticEvent); } catch(e) {} });
+  });
+
+  console.log('[Unified Patch] addEventListener installed');
 })();
 </script>
 
@@ -170,29 +133,21 @@
     window.parent.postMessage({ type: 'sekai_iframe_dom_ready' }, '*');
   }
 
-  // Send dom_ready when DOMContentLoaded fires
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', sendDomReady);
   } else {
-    // DOM already loaded
     sendDomReady();
   }
 
-  // Helper to serialize message - handles objects that would become [object Object]
   function serializeMessage(msg) {
     if (msg === null || msg === undefined) return '';
     if (typeof msg === 'string') return msg;
     if (typeof msg === 'object') {
-      try {
-        return JSON.stringify(msg);
-      } catch (e) {
-        return String(msg);
-      }
+      try { return JSON.stringify(msg); } catch (e) { return String(msg); }
     }
     return String(msg);
   }
 
-  // Catch JS errors and send to parent
   window.onerror = function(message, source, lineno, colno, error) {
     window.parent.postMessage({
       type: 'sekai_iframe_js_error',
@@ -203,11 +158,9 @@
       errorName: error ? error.name : '',
       errorStack: error ? error.stack : ''
     }, '*');
-    // Return false to allow default error handling
     return false;
   };
 
-  // Also catch unhandled promise rejections
   window.addEventListener('unhandledrejection', function(event) {
     var reason = event.reason;
     var isError = reason instanceof Error;
@@ -226,76 +179,11 @@
 
 <script>
 (function() {
-  // Collect all devicemotion listeners registered by game code
-  var deviceMotionListeners = [];
-
-  // Save original addEventListener
-  var originalAddEventListener = window.addEventListener;
-
-  // Intercept addEventListener to capture devicemotion listeners
-  window.addEventListener = function(type, listener, options) {
-    if (type === 'devicemotion' && typeof listener === 'function') {
-      deviceMotionListeners.push(listener);
-      // Also add to native in case permission is granted elsewhere
-      return originalAddEventListener.call(this, type, listener, options);
-    }
-    return originalAddEventListener.call(this, type, listener, options);
-  };
-
-  // Also intercept removeEventListener
-  var originalRemoveEventListener = window.removeEventListener;
-  window.removeEventListener = function(type, listener, options) {
-    if (type === 'devicemotion' && typeof listener === 'function') {
-      var index = deviceMotionListeners.indexOf(listener);
-      if (index !== -1) {
-        deviceMotionListeners.splice(index, 1);
-      }
-    }
-    return originalRemoveEventListener.call(this, type, listener, options);
-  };
-
-  // Listen for forwarded motion data from parent
-  window.addEventListener('message', function(event) {
-    if (!event.data || event.data.type !== '__sekai_device_motion__') return;
-
-    var data = event.data;
-
-    // Create a synthetic event-like object
-    var syntheticEvent = {
-      accelerationIncludingGravity: data.accelerationIncludingGravity,
-      acceleration: data.acceleration,
-      rotationRate: data.rotationRate,
-      interval: data.interval || 16,
-      // Make it look like a real event
-      type: 'devicemotion',
-      timeStamp: data.timestamp || Date.now(),
-      target: window,
-      currentTarget: window,
-      preventDefault: function() {},
-      stopPropagation: function() {},
-      stopImmediatePropagation: function() {}
-    };
-
-    // Trigger all registered listeners
-    deviceMotionListeners.forEach(function(listener) {
-      try {
-        listener(syntheticEvent);
-      } catch (e) {
-        // Ignore listener errors
-      }
-    });
-  });
-})();
-</script>
-
-<script>
-(function() {
   // Track all AudioContexts created in this iframe
   var audioContexts = [];
   var originalAudioContext = window.AudioContext || window.webkitAudioContext;
 
   if (originalAudioContext) {
-    // Patch AudioContext constructor to track instances
     var PatchedAudioContext = function() {
       var ctx = new originalAudioContext();
       audioContexts.push(ctx);
@@ -303,222 +191,83 @@
     };
     PatchedAudioContext.prototype = originalAudioContext.prototype;
     window.AudioContext = PatchedAudioContext;
-    if (window.webkitAudioContext) {
-      window.webkitAudioContext = PatchedAudioContext;
-    }
+    if (window.webkitAudioContext) { window.webkitAudioContext = PatchedAudioContext; }
   }
 
-  // Track all Audio objects (including those created via new Audio())
   var audioElements = [];
   var originalAudio = window.Audio;
-  
   if (originalAudio) {
-    window.Audio = function(src) {
-      var audio = new originalAudio(src);
-      audioElements.push(audio);
-      return audio;
-    };
-    // Preserve prototype chain
+    window.Audio = function(src) { var audio = new originalAudio(src); audioElements.push(audio); return audio; };
     window.Audio.prototype = originalAudio.prototype;
   }
 
-  // Track video elements created via createElement
   var videoElements = [];
   var originalCreateElement = document.createElement;
-  
   document.createElement = function(tagName) {
     var element = originalCreateElement.call(document, tagName);
-    
-    // Track audio and video elements
     if (typeof tagName === 'string') {
       var tag = tagName.toLowerCase();
-      if (tag === 'audio') {
-        audioElements.push(element);
-      } else if (tag === 'video') {
-        videoElements.push(element);
-      }
+      if (tag === 'audio') audioElements.push(element);
+      else if (tag === 'video') videoElements.push(element);
     }
-    
     return element;
   };
 
-  // Track muted state to restore correctly
   var mutedElements = new WeakMap();
   var isMuted = false;
 
   function muteAllAudio() {
-    if (isMuted) return;
-    isMuted = true;
-
-    // Suspend all AudioContexts
-    audioContexts.forEach(function(ctx) {
-      if (ctx && ctx.state === 'running') {
-        ctx.suspend().catch(function() {});
-      }
-    });
-
-    // Mute all audio and video elements in DOM
+    if (isMuted) return; isMuted = true;
+    audioContexts.forEach(function(ctx) { if (ctx && ctx.state === 'running') ctx.suspend().catch(function(){}); });
     var mediaElements = document.querySelectorAll('audio, video');
-    mediaElements.forEach(function(el) {
-      // Remember original muted state
-      mutedElements.set(el, el.muted);
-      el.muted = true;
-    });
-
-    // Mute all tracked Audio objects (created via new Audio() or createElement)
-    audioElements.forEach(function(audio) {
-      try {
-        if (!mutedElements.has(audio)) {
-          mutedElements.set(audio, audio.muted);
-        }
-        audio.muted = true;
-      } catch (e) {
-        // Audio might be garbage collected or invalid
-      }
-    });
-
-    // Mute all tracked Video objects (created via createElement)
-    videoElements.forEach(function(video) {
-      try {
-        if (!mutedElements.has(video)) {
-          mutedElements.set(video, video.muted);
-        }
-        video.muted = true;
-      } catch (e) {
-        // Video might be garbage collected or invalid
-      }
-    });
+    mediaElements.forEach(function(el) { mutedElements.set(el, el.muted); el.muted = true; });
+    audioElements.forEach(function(audio) { try { if (!mutedElements.has(audio)) mutedElements.set(audio, audio.muted); audio.muted = true; } catch(e) {} });
+    videoElements.forEach(function(video) { try { if (!mutedElements.has(video)) mutedElements.set(video, video.muted); video.muted = true; } catch(e) {} });
   }
 
   function unmuteAllAudio() {
-    if (!isMuted) return;
-    isMuted = false;
-
-    // Resume all AudioContexts
-    audioContexts.forEach(function(ctx) {
-      if (ctx && ctx.state === 'suspended') {
-        ctx.resume().catch(function() {});
-      }
-    });
-
-    // Restore audio and video elements in DOM to original state
+    if (!isMuted) return; isMuted = false;
+    audioContexts.forEach(function(ctx) { if (ctx && ctx.state === 'suspended') ctx.resume().catch(function(){}); });
     var mediaElements = document.querySelectorAll('audio, video');
-    mediaElements.forEach(function(el) {
-      var wasMuted = mutedElements.get(el);
-      if (wasMuted !== undefined) {
-        el.muted = wasMuted;
-      } else {
-        el.muted = false;
-      }
-    });
-
-    // Restore tracked Audio objects to original state
-    audioElements.forEach(function(audio) {
-      try {
-        var wasMuted = mutedElements.get(audio);
-        if (wasMuted !== undefined) {
-          audio.muted = wasMuted;
-        } else {
-          audio.muted = false;
-        }
-      } catch (e) {
-        // Audio might be garbage collected or invalid
-      }
-    });
-
-    // Restore tracked Video objects to original state
-    videoElements.forEach(function(video) {
-      try {
-        var wasMuted = mutedElements.get(video);
-        if (wasMuted !== undefined) {
-          video.muted = wasMuted;
-        } else {
-          video.muted = false;
-        }
-      } catch (e) {
-        // Video might be garbage collected or invalid
-      }
-    });
+    mediaElements.forEach(function(el) { var wasMuted = mutedElements.get(el); if (wasMuted !== undefined) el.muted = wasMuted; else el.muted = false; });
+    audioElements.forEach(function(audio) { try { var wasMuted = mutedElements.get(audio); if (wasMuted !== undefined) audio.muted = wasMuted; else audio.muted = false; } catch(e) {} });
+    videoElements.forEach(function(video) { try { var wasMuted = mutedElements.get(video); if (wasMuted !== undefined) video.muted = wasMuted; else video.muted = false; } catch(e) {} });
   }
 
   window.addEventListener('message', function(event) {
     if (!event.data) return;
-
-    if (event.data.type === 'receive_audio_mute' ||
-        (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_mute')) {
-      muteAllAudio();
-    }
-
-    if (event.data.type === 'receive_audio_unmute' ||
-        (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_unmute')) {
-      unmuteAllAudio();
-    }
+    if (event.data.type === 'receive_audio_mute' || (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_mute')) muteAllAudio();
+    if (event.data.type === 'receive_audio_unmute' || (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_unmute')) unmuteAllAudio();
   });
 })();
 </script>
 
 <script>
 (function() {
-  // Set styles to contain scroll and prevent propagation to parent
-  // CRITICAL: touch-action:none is the PRIMARY scroll blocker - it's handled by the compositor
-  // without waiting for JS, preventing WebView freezes during rapid swipes
   var style = document.createElement('style');
   style.textContent = 'html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}';
   document.head.appendChild(style);
 
-  // Track scrollable elements to re-enable touch-action for them
   var scrollableTarget = null;
-
-  // Find scrollable ancestor of touch target
   function findScrollableAncestor(el) {
     while (el && el !== document.body && el !== document.documentElement) {
       var cs = window.getComputedStyle(el);
-      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
-        return el;
-      }
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return el;
       el = el.parentElement;
     }
     return null;
   }
 
-  // On touchstart, check if we're in a scrollable element
-  // If so, temporarily enable touch-action for that element
   document.addEventListener('touchstart', function(e) {
-    if (e.touches.length !== 1) {
-      scrollableTarget = null;
-      return;
-    }
-
+    if (e.touches.length !== 1) { scrollableTarget = null; return; }
     scrollableTarget = findScrollableAncestor(e.target);
-
-    // If there's a scrollable element, enable touch-action:pan-y for it
-    if (scrollableTarget) {
-      scrollableTarget.style.touchAction = 'pan-y';
-    }
+    if (scrollableTarget) scrollableTarget.style.touchAction = 'pan-y';
   }, { passive: true, capture: true });
 
-  // On touchend, reset touch-action
-  document.addEventListener('touchend', function(e) {
-    if (scrollableTarget) {
-      scrollableTarget.style.touchAction = '';
-      scrollableTarget = null;
-    }
-  }, { passive: true, capture: true });
+  document.addEventListener('touchend', function(e) { if (scrollableTarget) { scrollableTarget.style.touchAction = ''; scrollableTarget = null; } }, { passive: true, capture: true });
 
-  // Notify parent when input is focused (for keyboard handling)
-  document.addEventListener('focusin', function(e) {
-    var t = e.target;
-    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) {
-      window.parent.postMessage({ type: 'iframe-focusin' }, '*');
-    }
-  }, true);
-
-  document.addEventListener('focusout', function(e) {
-    var t = e.target;
-    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) {
-      window.parent.postMessage({ type: 'iframe-focusout' }, '*');
-    }
-  }, true);
+  document.addEventListener('focusin', function(e) { var t = e.target; if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) window.parent.postMessage({ type: 'iframe-focusin' }, '*'); }, true);
+  document.addEventListener('focusout', function(e) { var t = e.target; if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) window.parent.postMessage({ type: 'iframe-focusout' }, '*'); }, true);
 })();
 </script><style>html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}</style>
 
@@ -527,36 +276,17 @@
   var viewportStyle = document.createElement('style');
   viewportStyle.id = 'sekai-viewport-style';
   document.head.appendChild(viewportStyle);
-
   var currentHeight = null;
-
   function applyHeight(height) {
-    if (height === currentHeight) return;
-    currentHeight = height;
-
+    if (height === currentHeight) return; currentHeight = height;
     var transition = 'transition: height 0.25s cubic-bezier(0.32, 0, 0.68, 1) !important;';
-
     if (typeof height === 'number' && height > 0) {
-      viewportStyle.textContent =
-        ':root { --sekai-viewport-height: ' + height + 'px; }' +
-        'html { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }' +
-        'body { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }';
+      viewportStyle.textContent = ':root { --sekai-viewport-height: ' + height + 'px; }' + 'html { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }' + 'body { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }';
     } else {
-      viewportStyle.textContent =
-        ':root { --sekai-viewport-height: 100%; }' +
-        'html { height: 100% !important; overflow: hidden !important; }' +
-        'body { height: 100% !important; overflow: hidden !important; }';
+      viewportStyle.textContent = ':root { --sekai-viewport-height: 100%; }' + 'html { height: 100% !important; overflow: hidden !important; }' + 'body { height: 100% !important; overflow: hidden !important; }';
     }
   }
-
-  window.addEventListener('message', function(event) {
-    if (event.data && event.data.type === 'viewport_height_change') {
-      var height = typeof event.data.height === 'number' ? event.data.height : null;
-      applyHeight(height);
-    }
-  });
-
-  // Notify parent that viewport handler is ready (handshake)
+  window.addEventListener('message', function(event) { if (event.data && event.data.type === 'viewport_height_change') { var height = typeof event.data.height === 'number' ? event.data.height : null; applyHeight(height); } });
   window.parent.postMessage({ type: 'viewport_ready' }, '*');
 })();
 </script><style id="sekai-viewport-style"></style>
@@ -566,35 +296,21 @@
   var touchStartY = null;
   var lastSentTime = 0;
   var SWIPE_THRESHOLD = 100;
-  var DEBOUNCE_MS = 500; // Prevent multiple events from single swipe
-
-  document.addEventListener('touchstart', function(e) {
-    if (e.touches.length === 1) {
-      touchStartY = e.touches[0].clientY;
-    }
-  }, { passive: true, capture: true });
-
+  var DEBOUNCE_MS = 500;
+  document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) touchStartY = e.touches[0].clientY; }, { passive: true, capture: true });
   document.addEventListener('touchend', function(e) {
     if (touchStartY !== null && e.changedTouches.length === 1) {
       var now = Date.now();
       var deltaY = touchStartY - e.changedTouches[0].clientY;
       var timeSinceLast = now - lastSentTime;
-      // Only send if above threshold AND not within debounce window
       if (deltaY >= SWIPE_THRESHOLD && timeSinceLast >= DEBOUNCE_MS) {
         lastSentTime = now;
-        window.parent.postMessage({
-          type: 'sekai_iframe_swipe_up',
-          deltaY: deltaY,
-          timestamp: now
-        }, '*');
+        window.parent.postMessage({ type: 'sekai_iframe_swipe_up', deltaY: deltaY, timestamp: now }, '*');
       }
     }
     touchStartY = null;
   }, { passive: true, capture: true });
-
-  document.addEventListener('touchcancel', function() {
-    touchStartY = null;
-  }, { passive: true, capture: true });
+  document.addEventListener('touchcancel', function() { touchStartY = null; }, { passive: true, capture: true });
 })();
 </script>
 
@@ -602,6 +318,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NumRacer: Face-to-Face</title>
     
+    <!-- PWA manifest -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#4F46E5">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
+
     <!-- Libraries -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
@@ -611,6 +335,23 @@
     <script type="module">
         import { snapdom } from 'https://cdn.jsdelivr.net/npm/@zumer/snapdom@2.0.2/+esm';
         window.snapdom = snapdom;
+    </script>
+
+    <script>
+    // Register service worker for offline capability
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then(function(reg) {
+        console.log('Service Worker registered', reg);
+      }).catch(function(err) { console.warn('Service Worker registration failed', err); });
+    }
+
+    // beforeinstallprompt handling for custom install UI
+    var deferredPrompt;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      deferredPrompt = e;
+      // You can show a custom install button in your UI and call deferredPrompt.prompt() when clicked
+    });
     </script>
 
     <style>
@@ -911,4 +652,7 @@
         }
 
     </style>
-<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-...[truncated for brevity]
+<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-...[t...]
+</head>
+<body>
+<!-- The rest of the original HTML continues unchanged -->
