@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Clock - Multiple Time Zones</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        .clock-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+
+        .clock-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .timezone-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .timezone-label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .time-display {
+            font-size: 48px;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+            font-family: 'Courier New', monospace;
+            letter-spacing: 3px;
+            margin-bottom: 10px;
+        }
+
+        .date-display {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.8);
+            margin-bottom: 15px;
+        }
+
+        .day-display {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .info-section {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .info-item {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.7);
+            margin: 5px 0;
+        }
+
+        .header {
+            grid-column: 1 / -1;
+            text-align: center;
+            color: white;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 42px;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+
+            .time-display {
+                font-size: 36px;
+            }
+
+            .header h1 {
+                font-size: 32px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌍 World Clock</h1>
+            <p>Current time across different time zones</p>
+        </div>
+
+        <!-- New York -->
+        <div class="clock-card">
+            <div class="timezone-name">New York</div>
+            <div class="timezone-label">America/New_York</div>
+            <div class="time-display" id="time-ny">--:--:--</div>
+            <div class="date-display" id="date-ny">--/--/----</div>
+            <div class="day-display" id="day-ny">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC-5 (EST) / UTC-4 (EDT)</div>
+            </div>
+        </div>
+
+        <!-- London -->
+        <div class="clock-card">
+            <div class="timezone-name">London</div>
+            <div class="timezone-label">Europe/London</div>
+            <div class="time-display" id="time-london">--:--:--</div>
+            <div class="date-display" id="date-london">--/--/----</div>
+            <div class="day-display" id="day-london">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+0 (GMT) / UTC+1 (BST)</div>
+            </div>
+        </div>
+
+        <!-- Paris -->
+        <div class="clock-card">
+            <div class="timezone-name">Paris</div>
+            <div class="timezone-label">Europe/Paris</div>
+            <div class="time-display" id="time-paris">--:--:--</div>
+            <div class="date-display" id="date-paris">--/--/----</div>
+            <div class="day-display" id="day-paris">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+1 (CET) / UTC+2 (CEST)</div>
+            </div>
+        </div>
+
+        <!-- Tokyo -->
+        <div class="clock-card">
+            <div class="timezone-name">Tokyo</div>
+            <div class="timezone-label">Asia/Tokyo</div>
+            <div class="time-display" id="time-tokyo">--:--:--</div>
+            <div class="date-display" id="date-tokyo">--/--/----</div>
+            <div class="day-display" id="day-tokyo">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+9 (JST)</div>
+            </div>
+        </div>
+
+        <!-- Sydney -->
+        <div class="clock-card">
+            <div class="timezone-name">Sydney</div>
+            <div class="timezone-label">Australia/Sydney</div>
+            <div class="time-display" id="time-sydney">--:--:--</div>
+            <div class="date-display" id="date-sydney">--/--/----</div>
+            <div class="day-display" id="day-sydney">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+10 (AEDT) / UTC+11 (AEST)</div>
+            </div>
+        </div>
+
+        <!-- Dubai -->
+        <div class="clock-card">
+            <div class="timezone-name">Dubai</div>
+            <div class="timezone-label">Asia/Dubai</div>
+            <div class="time-display" id="time-dubai">--:--:--</div>
+            <div class="date-display" id="date-dubai">--/--/----</div>
+            <div class="day-display" id="day-dubai">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+4 (GST)</div>
+            </div>
+        </div>
+
+        <!-- Singapore -->
+        <div class="clock-card">
+            <div class="timezone-name">Singapore</div>
+            <div class="timezone-label">Asia/Singapore</div>
+            <div class="time-display" id="time-singapore">--:--:--</div>
+            <div class="date-display" id="date-singapore">--/--/----</div>
+            <div class="day-display" id="day-singapore">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC+8 (SGT)</div>
+            </div>
+        </div>
+
+        <!-- Los Angeles -->
+        <div class="clock-card">
+            <div class="timezone-name">Los Angeles</div>
+            <div class="timezone-label">America/Los_Angeles</div>
+            <div class="time-display" id="time-la">--:--:--</div>
+            <div class="date-display" id="date-la">--/--/----</div>
+            <div class="day-display" id="day-la">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC-8 (PST) / UTC-7 (PDT)</div>
+            </div>
+        </div>
+
+        <!-- São Paulo -->
+        <div class="clock-card">
+            <div class="timezone-name">São Paulo</div>
+            <div class="timezone-label">America/Sao_Paulo</div>
+            <div class="time-display" id="time-saopaulo">--:--:--</div>
+            <div class="date-display" id="date-saopaulo">--/--/----</div>
+            <div class="day-display" id="day-saopaulo">---</div>
+            <div class="info-section">
+                <div class="info-item">UTC-3 (BRT)</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const timezones = [
+            { id: 'ny', name: 'New York', timezone: 'America/New_York' },
+            { id: 'london', name: 'London', timezone: 'Europe/London' },
+            { id: 'paris', name: 'Paris', timezone: 'Europe/Paris' },
+            { id: 'tokyo', name: 'Tokyo', timezone: 'Asia/Tokyo' },
+            { id: 'sydney', name: 'Sydney', timezone: 'Australia/Sydney' },
+            { id: 'dubai', name: 'Dubai', timezone: 'Asia/Dubai' },
+            { id: 'singapore', name: 'Singapore', timezone: 'Asia/Singapore' },
+            { id: 'la', name: 'Los Angeles', timezone: 'America/Los_Angeles' },
+            { id: 'saopaulo', name: 'São Paulo', timezone: 'America/Sao_Paulo' }
+        ];
+
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+        function formatTime(date) {
+            return date.toLocaleTimeString('en-US', { 
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        function formatDate(date) {
+            return date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            });
+        }
+
+        function updateClocks() {
+            timezones.forEach(tz => {
+                try {
+                    const time = new Date().toLocaleString('en-US', { timeZone: tz.timezone });
+                    const date = new Date(time);
+
+                    document.getElementById(`time-${tz.id}`).textContent = formatTime(date);
+                    document.getElementById(`date-${tz.id}`).textContent = formatDate(date);
+                    document.getElementById(`day-${tz.id}`).textContent = days[date.getDay()];
+                } catch (error) {
+                    console.error(`Error updating ${tz.name}:`, error);
+                }
+            });
+        }
+
+        // Update immediately and then every second
+        updateClocks();
+        setInterval(updateClocks, 1000);
+    </script>
+</body>
+</html>
