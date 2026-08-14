@@ -2,27 +2,20 @@
 <html lang="en" style="height: 100%; overscroll-behavior: contain; --p1-color: #4F46E5; --p1-cube-bg: #FFFFFF; --p2-color: #E11D48; --p2-cube-bg: #FFFFFF; --slot-bg: #F1F5F9;"><head>
 <script>
 (function() {
-  // Function to set or update viewport meta tag
   function ensureViewportMeta() {
     var viewportMeta = document.querySelector('meta[name="viewport"]');
-    
     if (!viewportMeta) {
-      // Create viewport meta tag if it doesn't exist
       viewportMeta = document.createElement('meta');
       viewportMeta.name = 'viewport';
       document.head.insertBefore(viewportMeta, document.head.firstChild);
     }
-    
-    // Set viewport to prevent iOS auto-zoom
     viewportMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
   }
-  
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', ensureViewportMeta);
   } else {
     ensureViewportMeta();
   }
-  
   if (!document.head) {
     var observer = new MutationObserver(function(mutations) {
       if (document.head) {
@@ -35,624 +28,998 @@
 })();
 </script>
 
-<script>
-// Unified event listener patch:
-// - click -> pointerup conversion (preserves removeEventListener)
-// - force passive: true for touchstart/touchmove by default (unless explicitly passive:false)
-// - capture devicemotion listeners to allow synthetic events from parent
-(function(){
-  var nativeAdd = EventTarget.prototype.addEventListener;
-  var nativeRemove = EventTarget.prototype.removeEventListener;
-  var listenerMap = new WeakMap(); // element -> Map(original -> wrapper)
-  var deviceMotionListeners = [];
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NumRacer: Face-to-Face</title>
 
-  EventTarget.prototype.addEventListener = function(type, listener, options) {
-    var newOptions = options;
-    // Force passive for touchstart/touchmove unless explicitly passive:false
-    if ((type === 'touchstart' || type === 'touchmove') && !(options && options.passive === false)) {
-      if (typeof options === 'boolean' || options === undefined) {
-        newOptions = { passive: true, capture: !!options };
-      } else {
-        newOptions = Object.assign({}, options, { passive: true });
-      }
-    }
+<!-- Libraries -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-    // Convert click listeners to pointerup for better iOS behavior
-    if (type === 'click' && typeof listener === 'function') {
-      var map = listenerMap.get(this);
-      if (!map) { map = new Map(); listenerMap.set(this, map); }
-      var existing = map.get(listener);
-      if (existing) return nativeAdd.call(this, 'pointerup', existing, newOptions);
-
-      var wrapper = function(e) {
-        if (typeof e.button !== 'undefined' && e.button !== 0) return;
-        try { listener.call(this, e); } catch (err) { console.error('[Click->Pointer wrapper] error', err); }
-      };
-      map.set(listener, wrapper);
-      return nativeAdd.call(this, 'pointerup', wrapper, newOptions);
-    }
-
-    // Capture devicemotion listeners so we can forward synthetic events
-    if (type === 'devicemotion' && typeof listener === 'function') {
-      deviceMotionListeners.push(listener);
-      return nativeAdd.call(this, type, listener, newOptions);
-    }
-
-    return nativeAdd.call(this, type, listener, newOptions);
-  };
-
-  EventTarget.prototype.removeEventListener = function(type, listener, options) {
-    if (type === 'click' && typeof listener === 'function') {
-      var map = listenerMap.get(this);
-      if (map) {
-        var wrapper = map.get(listener);
-        if (wrapper) { map.delete(listener); return nativeRemove.call(this, 'pointerup', wrapper, options); }
-      }
-    }
-
-    if (type === 'devicemotion' && typeof listener === 'function') {
-      var idx = deviceMotionListeners.indexOf(listener);
-      if (idx !== -1) deviceMotionListeners.splice(idx, 1);
-    }
-
-    return nativeRemove.call(this, type, listener, options);
-  };
-
-  // Listen for forwarded motion data from parent and dispatch to captured listeners
-  window.addEventListener('message', function(event) {
-    if (!event.data || event.data.type !== '__sekai_device_motion__') return;
-    var data = event.data;
-    var syntheticEvent = {
-      accelerationIncludingGravity: data.accelerationIncludingGravity,
-      acceleration: data.acceleration,
-      rotationRate: data.rotationRate,
-      interval: data.interval || 16,
-      type: 'devicemotion',
-      timeStamp: data.timestamp || Date.now(),
-      target: window,
-      currentTarget: window,
-      preventDefault: function(){},
-      stopPropagation: function(){},
-      stopImmediatePropagation: function(){}
-    };
-    deviceMotionListeners.forEach(function(listener){ try { listener(syntheticEvent); } catch(e) {} });
-  });
-
-  console.log('[Unified Patch] addEventListener installed');
-})();
+<!-- Snapdom for Sharing -->
+<script type="module">
+    import { snapdom } from 'https://cdn.jsdelivr.net/npm/@zumer/snapdom@2.0.2/+esm';
+    window.snapdom = snapdom;
 </script>
 
-<script>
-(function() {
-  // Track if dom_ready was already sent
-  var domReadySent = false;
-
-  function sendDomReady() {
-    if (domReadySent) return;
-    domReadySent = true;
-    window.parent.postMessage({ type: 'sekai_iframe_dom_ready' }, '*');
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', sendDomReady);
-  } else {
-    sendDomReady();
-  }
-
-  function serializeMessage(msg) {
-    if (msg === null || msg === undefined) return '';
-    if (typeof msg === 'string') return msg;
-    if (typeof msg === 'object') {
-      try { return JSON.stringify(msg); } catch (e) { return String(msg); }
+<style>
+    :root {
+        --p1-color: #4F46E5;
+        --p1-cube-bg: #FFFFFF;
+        --p2-color: #E11D48;
+        --p2-cube-bg: #FFFFFF;
+        --slot-bg: #F1F5F9;
+        --slot-border: #CBD5E1;
+        --correct: #22C55E;
+        --incorrect: #EF4444;
+        --divider-color: #CBD5E1;
     }
-    return String(msg);
-  }
-
-  window.onerror = function(message, source, lineno, colno, error) {
-    window.parent.postMessage({
-      type: 'sekai_iframe_js_error',
-      message: serializeMessage(message),
-      source: source || '',
-      lineno: lineno || 0,
-      colno: colno || 0,
-      errorName: error ? error.name : '',
-      errorStack: error ? error.stack : ''
-    }, '*');
-    return false;
-  };
-
-  window.addEventListener('unhandledrejection', function(event) {
-    var reason = event.reason;
-    var isError = reason instanceof Error;
-    window.parent.postMessage({
-      type: 'sekai_iframe_js_error',
-      message: reason ? serializeMessage(reason) : 'Unhandled promise rejection',
-      source: 'unhandledrejection',
-      lineno: 0,
-      colno: 0,
-      errorName: isError ? reason.name : '',
-      errorStack: isError ? reason.stack : ''
-    }, '*');
-  });
-})();
-</script>
-
-<script>
-(function() {
-  // Track all AudioContexts created in this iframe
-  var audioContexts = [];
-  var originalAudioContext = window.AudioContext || window.webkitAudioContext;
-
-  if (originalAudioContext) {
-    var PatchedAudioContext = function() {
-      var ctx = new originalAudioContext();
-      audioContexts.push(ctx);
-      return ctx;
-    };
-    PatchedAudioContext.prototype = originalAudioContext.prototype;
-    window.AudioContext = PatchedAudioContext;
-    if (window.webkitAudioContext) { window.webkitAudioContext = PatchedAudioContext; }
-  }
-
-  var audioElements = [];
-  var originalAudio = window.Audio;
-  if (originalAudio) {
-    window.Audio = function(src) { var audio = new originalAudio(src); audioElements.push(audio); return audio; };
-    window.Audio.prototype = originalAudio.prototype;
-  }
-
-  var videoElements = [];
-  var originalCreateElement = document.createElement;
-  document.createElement = function(tagName) {
-    var element = originalCreateElement.call(document, tagName);
-    if (typeof tagName === 'string') {
-      var tag = tagName.toLowerCase();
-      if (tag === 'audio') audioElements.push(element);
-      else if (tag === 'video') videoElements.push(element);
-    }
-    return element;
-  };
-
-  var mutedElements = new WeakMap();
-  var isMuted = false;
-
-  function muteAllAudio() {
-    if (isMuted) return; isMuted = true;
-    audioContexts.forEach(function(ctx) { if (ctx && ctx.state === 'running') ctx.suspend().catch(function(){}); });
-    var mediaElements = document.querySelectorAll('audio, video');
-    mediaElements.forEach(function(el) { mutedElements.set(el, el.muted); el.muted = true; });
-    audioElements.forEach(function(audio) { try { if (!mutedElements.has(audio)) mutedElements.set(audio, audio.muted); audio.muted = true; } catch(e) {} });
-    videoElements.forEach(function(video) { try { if (!mutedElements.has(video)) mutedElements.set(video, video.muted); video.muted = true; } catch(e) {} });
-  }
-
-  function unmuteAllAudio() {
-    if (!isMuted) return; isMuted = false;
-    audioContexts.forEach(function(ctx) { if (ctx && ctx.state === 'suspended') ctx.resume().catch(function(){}); });
-    var mediaElements = document.querySelectorAll('audio, video');
-    mediaElements.forEach(function(el) { var wasMuted = mutedElements.get(el); if (wasMuted !== undefined) el.muted = wasMuted; else el.muted = false; });
-    audioElements.forEach(function(audio) { try { var wasMuted = mutedElements.get(audio); if (wasMuted !== undefined) audio.muted = wasMuted; else audio.muted = false; } catch(e) {} });
-    videoElements.forEach(function(video) { try { var wasMuted = mutedElements.get(video); if (wasMuted !== undefined) video.muted = wasMuted; else video.muted = false; } catch(e) {} });
-  }
-
-  window.addEventListener('message', function(event) {
-    if (!event.data) return;
-    if (event.data.type === 'receive_audio_mute' || (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_mute')) muteAllAudio();
-    if (event.data.type === 'receive_audio_unmute' || (event.data.origin === 'sekai_gaming_iframe_api' && event.data.type === 'receive_audio_unmute')) unmuteAllAudio();
-  });
-})();
-</script>
-
-<script>
-(function() {
-  var style = document.createElement('style');
-  style.textContent = 'html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}';
-  document.head.appendChild(style);
-
-  var scrollableTarget = null;
-  function findScrollableAncestor(el) {
-    while (el && el !== document.body && el !== document.documentElement) {
-      var cs = window.getComputedStyle(el);
-      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) return el;
-      el = el.parentElement;
-    }
-    return null;
-  }
-
-  document.addEventListener('touchstart', function(e) {
-    if (e.touches.length !== 1) { scrollableTarget = null; return; }
-    scrollableTarget = findScrollableAncestor(e.target);
-    if (scrollableTarget) scrollableTarget.style.touchAction = 'pan-y';
-  }, { passive: true, capture: true });
-
-  document.addEventListener('touchend', function(e) { if (scrollableTarget) { scrollableTarget.style.touchAction = ''; scrollableTarget = null; } }, { passive: true, capture: true });
-
-  document.addEventListener('focusin', function(e) { var t = e.target; if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) window.parent.postMessage({ type: 'iframe-focusin' }, '*'); }, true);
-  document.addEventListener('focusout', function(e) { var t = e.target; if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) window.parent.postMessage({ type: 'iframe-focusout' }, '*'); }, true);
-})();
-</script><style>html,body{overscroll-behavior:contain!important;height:100%!important;-webkit-user-select:none!important;user-select:none!important;touch-action:none!important;}</style>
-
-<script>
-(function() {
-  var viewportStyle = document.createElement('style');
-  viewportStyle.id = 'sekai-viewport-style';
-  document.head.appendChild(viewportStyle);
-  var currentHeight = null;
-  function applyHeight(height) {
-    if (height === currentHeight) return; currentHeight = height;
-    var transition = 'transition: height 0.25s cubic-bezier(0.32, 0, 0.68, 1) !important;';
-    if (typeof height === 'number' && height > 0) {
-      viewportStyle.textContent = ':root { --sekai-viewport-height: ' + height + 'px; }' + 'html { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }' + 'body { height: ' + height + 'px !important; overflow: hidden !important; ' + transition + ' }';
-    } else {
-      viewportStyle.textContent = ':root { --sekai-viewport-height: 100%; }' + 'html { height: 100% !important; overflow: hidden !important; }' + 'body { height: 100% !important; overflow: hidden !important; }';
-    }
-  }
-  window.addEventListener('message', function(event) { if (event.data && event.data.type === 'viewport_height_change') { var height = typeof event.data.height === 'number' ? event.data.height : null; applyHeight(height); } });
-  window.parent.postMessage({ type: 'viewport_ready' }, '*');
-})();
-</script><style id="sekai-viewport-style"></style>
-
-<script>
-(function() {
-  var touchStartY = null;
-  var lastSentTime = 0;
-  var SWIPE_THRESHOLD = 100;
-  var DEBOUNCE_MS = 500;
-  document.addEventListener('touchstart', function(e) { if (e.touches.length === 1) touchStartY = e.touches[0].clientY; }, { passive: true, capture: true });
-  document.addEventListener('touchend', function(e) {
-    if (touchStartY !== null && e.changedTouches.length === 1) {
-      var now = Date.now();
-      var deltaY = touchStartY - e.changedTouches[0].clientY;
-      var timeSinceLast = now - lastSentTime;
-      if (deltaY >= SWIPE_THRESHOLD && timeSinceLast >= DEBOUNCE_MS) {
-        lastSentTime = now;
-        window.parent.postMessage({ type: 'sekai_iframe_swipe_up', deltaY: deltaY, timestamp: now }, '*');
-      }
-    }
-    touchStartY = null;
-  }, { passive: true, capture: true });
-  document.addEventListener('touchcancel', function() { touchStartY = null; }, { passive: true, capture: true });
-})();
-</script>
-
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NumRacer: Face-to-Face</title>
     
-    <!-- PWA manifest -->
-    <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#4F46E5">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
+    * {
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        box-sizing: border-box;
+    }
 
-    <!-- Libraries -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background-color: #F8FAFC;
+    }
+
+    .hidden { display: none !important; }
+    .flex-center { display: flex; align-items: center; justify-content: center; }
     
-    <!-- Snapdom for Sharing -->
-    <script type="module">
-        import { snapdom } from 'https://cdn.jsdelivr.net/npm/@zumer/snapdom@2.0.2/+esm';
-        window.snapdom = snapdom;
-    </script>
+    #layer-bg { z-index: 0; position: absolute; inset: 0; pointer-events: none; }
+    #layer-ui { z-index: 10; position: absolute; inset: 0; display: flex; flex-direction: column; }
+    #layer-overlay { z-index: 50; position: absolute; inset: 0; pointer-events: none; }
+    
+    .player-zone {
+        flex: 1;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        padding: 15px;
+        overflow: hidden;
+    }
+
+    .game-divider {
+        height: 8px;
+        background: var(--divider-color);
+        width: 100%;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .player-zone.inverted {
+        transform: rotate(180deg);
+    }
+
+    .pseudo-label {
+        position: absolute;
+        top: 5px;
+        right: 15px;
+        font-size: 12px;
+        font-weight: bold;
+        color: #64748b;
+        background: rgba(255,255,255,0.8);
+        padding: 2px 8px;
+        border-radius: 4px;
+        z-index: 5;
+    }
+
+    .grid-container {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        grid-template-rows: repeat(5, 1fr);
+        gap: 4px;
+        width: 90%;
+        max-width: 280px;
+        aspect-ratio: 4 / 5;
+        margin: auto;
+        padding: 8px;
+        background: #E2E8F0;
+        border-radius: 16px;
+    }
+
+    .slot {
+        position: relative;
+        background: var(--slot-bg);
+        border: 2px solid #CBD5E1;
+        border-radius: 10px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        font-size: 10px;
+        color: #94A3B8;
+        font-weight: bold;
+        transition: all 0.2s;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+        padding-top: 4px;
+    }
+
+    .buffer-slot {
+        opacity: 0.4;
+        background: #F8FAFC;
+    }
+    
+    .cube {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background: #FFFFFF;
+        border-radius: 8px;
+        box-shadow: 0 3px 0 #CBD5E1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        font-weight: 800;
+        color: #1E293B;
+        border: 1px solid #E2E8F0;
+        touch-action: none;
+        z-index: 20;
+        transform-origin: center center;
+        transition: transform 0.1s, box-shadow 0.1s;
+    }
+
+    .cube[data-player="p2"] {
+        background: var(--p2-cube-bg);
+    }
+
+    @keyframes congrats-pop {
+        0% { transform: scale(0.5) translateY(0); opacity: 0; }
+        50% { transform: scale(1.2) translateY(-20px); opacity: 1; }
+        100% { transform: scale(1) translateY(-30px); opacity: 0; }
+    }
+
+    .congrats-text {
+        position: absolute;
+        color: #22C55E;
+        font-weight: 900;
+        font-size: 14px;
+        pointer-events: none;
+        z-index: 100;
+        animation: congrats-pop 0.8s ease-out forwards;
+    }
+
+    .cube:active, .cube.dragging {
+        z-index: 100 !important;
+        transform: scale(1.1);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        opacity: 0.9;
+    }
+
+    .cube.correct {
+        background-color: #DCFCE7;
+        border-color: var(--correct);
+        color: var(--correct);
+    }
+
+    .cube.wrong {
+        background-color: #FEE2E2;
+        border-color: var(--incorrect);
+        color: var(--incorrect);
+    }
+
+    .btn-primary {
+        background: #4F46E5;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 12px;
+        font-weight: 600;
+        box-shadow: 0 4px 6px rgba(79, 70, 229, 0.3);
+        transition: transform 0.1s;
+        border: none;
+        cursor: pointer;
+    }
+    .btn-primary:active { transform: scale(0.96); }
+
+    .btn-secondary {
+        background: white;
+        color: #475569;
+        padding: 10px 20px;
+        border-radius: 12px;
+        font-weight: 600;
+        border: 1px solid #E2E8F0;
+        transition: transform 0.1s;
+        cursor: pointer;
+    }
+    .btn-secondary:active { transform: scale(0.96); }
+
+    .overlay-screen {
+        position: absolute;
+        inset: 0;
+        background: #F8FAFC;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        pointer-events: auto;
+        transition: opacity 0.3s;
+    }
+
+    #screen-admin, #screen-admin * {
+        touch-action: pan-y !important;
+    }
+    
+    .overlay-screen.hidden-anim {
+        visibility: hidden;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .input-field {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid #CBD5E1;
+        border-radius: 8px;
+        font-size: 16px;
+        margin-bottom: 12px;
+        background: white;
+    }
+
+    .draw-pile-container, .score-pile-container {
+        position: absolute;
+        bottom: 15px;
+        width: 54px;
+        height: 54px;
+        border: 2px dashed #94A3B8;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 5;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .draw-pile-container {
+        left: 15px;
+        background: #E2E8F0;
+    }
+
+    .score-pile-container {
+        right: 65px;
+        background: #DCFCE7;
+        border-color: #22C55E;
+    }
+    
+    .pile-label {
+        font-size: 8px;
+        font-weight: 800;
+        text-align: center;
+        text-transform: uppercase;
+        line-height: 1;
+        pointer-events: none;
+    }
+    
+    .draw-pile-label { color: #64748B; }
+    .score-pile-label { color: #166534; }
+
+    .deck-counter, .score-counter {
+        position: absolute;
+        top: -8px;
+        right: -8px;
+        color: white;
+        font-size: 9px;
+        padding: 2px 5px;
+        border-radius: 10px;
+        font-weight: bold;
+        z-index: 10;
+    }
+    
+    .deck-counter { background: #475569; }
+    .score-counter { background: #166534; }
+
+    .cube.stacking {
+        transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.6s;
+        pointer-events: none;
+        z-index: 100 !important;
+    }
+
+    .slot.completed {
+        background: #DCFCE7 !important;
+        border-color: #22C55E !important;
+        color: #22C55E !important;
+        box-shadow: none !important;
+    }
+</style>
+
+</head>
+<body style="user-select: none; height: 100%; overscroll-behavior: contain;">
+
+    <!-- Audio Elements -->
+    <audio id="music-bgm" loop src="https://prod-data.sekai.chat/aiu-bgm/1e978ac6-6cf0-4c11-b821-c2dbca52810e_Race Gurram-SenSongsMp3.Com_normalized.mp3"></audio>
+    <audio id="sfx-win" src="https://prod-data.sekai.chat/aiu-music-sfx/472_Roblox_Old_Winning_Sound_04bbc616bbd24ce7a6315d04ee956fed.mp3"></audio>
+    <audio id="sfx-place" src="https://prod-data.sekai.chat/aiu-music-sfx/674_Duolingo_Correct_SFX_1a449d3ba92041239ee10d2ef59f3c17.mp3"></audio>
+    <audio id="sfx-wrong" src="https://prod-data.sekai.chat/aiu-music-sfx/48/error_sound_xh_01_bf8135fce2540c5bb191244ff9bb459e.mp3"></audio>
+
+    <input type="file" id="music-upload" accept="audio/*, .mp3, .wav, .m4a, .ogg" class="hidden" onchange="handleMusicFile(this)">
+
+    <!-- MAIN UI LAYER -->
+    <div id="layer-ui">
+        
+        <!-- Player 2 Zone (Top, Inverted) -->
+        <div class="player-zone inverted" id="p2-zone">
+            <div class="pseudo-label" id="p2-pseudo-display">Joueur 2</div>
+            <div style="position: absolute; top: 8px; left: 8px; font-size: 14px; color: #E11D48; font-weight: bold; opacity: 0.5;">PLAYER 2</div>
+            <div style="position: absolute; bottom: 8px; right: 8px; display: flex; flex-direction: column; gap: 8px; z-index: 50;">
+                <button onclick="spawnCubes('p2-zone', 'p2')" class="btn-secondary" style="font-size: 10px; padding: 8px 12px;">
+                    <i class="fa-solid fa-shuffle"></i> MIXER
+                </button>
+                <button onclick="startGame()" class="btn-primary" style="font-size: 10px; padding: 8px 12px; background: #E11D48;">
+                    <i class="fa-solid fa-rotate-right"></i> RELANCER
+                </button>
+            </div>
+            <div class="draw-pile-container" id="p2-draw-pile">
+                <div class="pile-label draw-pile-label">PIOCHE<br>J2</div>
+                <div class="deck-counter" id="p2-deck-count">16</div>
+            </div>
+            <div class="score-pile-container" id="p2-score-pile">
+                <div class="pile-label score-pile-label">SCORE<br>J2</div>
+                <div class="score-counter" id="p2-score-count">0</div>
+            </div>
+            <div class="grid-container" id="p2-grid"></div>
+        </div>
+
+        <div class="game-divider"></div>
+
+        <!-- Player 1 Zone (Bottom) -->
+        <div class="player-zone" id="p1-zone">
+            <div class="pseudo-label" id="p1-pseudo-display">Joueur 1</div>
+            <div style="position: absolute; top: 8px; left: 8px; font-size: 14px; color: #4F46E5; font-weight: bold; opacity: 0.5;">PLAYER 1</div>
+            <div style="position: absolute; bottom: 8px; right: 8px; display: flex; flex-direction: column; gap: 8px; z-index: 50;">
+                <button onclick="spawnCubes('p1-zone', 'p1')" class="btn-secondary" style="font-size: 10px; padding: 8px 12px;">
+                    <i class="fa-solid fa-shuffle"></i> MIXER
+                </button>
+                <button onclick="startGame()" class="btn-primary" style="font-size: 10px; padding: 8px 12px;">
+                    <i class="fa-solid fa-rotate-right"></i> RELANCER
+                </button>
+            </div>
+            <div class="draw-pile-container" id="p1-draw-pile">
+                <div class="pile-label draw-pile-label">PIOCHE<br>J1</div>
+                <div class="deck-counter" id="p1-deck-count">16</div>
+            </div>
+            <div class="score-pile-container" id="p1-score-pile">
+                <div class="pile-label score-pile-label">SCORE<br>J1</div>
+                <div class="score-counter" id="p1-score-count">0</div>
+            </div>
+            <div class="grid-container" id="p1-grid"></div>
+        </div>
+
+    </div>
+
+    <!-- START SCREEN -->
+    <div id="screen-start" class="overlay-screen flex-center">
+        <div style="max-width: 450px; width: 100%; padding: 24px; text-align: center;">
+            <h1 id="app-title" style="font-size: 32px; font-weight: 800; color: #1E293B; margin-bottom: 8px;">NumRacer : Le Duel</h1>
+            <p id="app-subtitle" style="color: #64748B; font-size: 18px; margin-bottom: 8px;">La course aux chiffres face à face</p>
+            <p id="app-created-by" style="font-size: 12px; color: #94A3B8; margin-bottom: 24px;">Créé par Votre Nom</p>
+
+            <div style="background: white; border-radius: 16px; padding: 24px; margin-bottom: 24px; box-shadow: 0 20px 25px rgba(0,0,0,0.1);">
+                <div style="font-size: 48px; font-weight: 800; color: #4F46E5;">16</div>
+                <p id="start-instruction" style="color: #475569; margin-top: 8px;">Rangez les chiffres de 1 à 16 dans l'ordre. Le premier à finir gagne !</p>
+            </div>
+
+            <button onclick="showPlayerSetup()" class="btn-primary" style="width: 100%; font-size: 18px; padding: 16px; margin-bottom: 12px;">
+                <i class="fa-solid fa-play"></i> JOUER
+            </button>
+            <button onclick="toggleRulesModal(true)" class="btn-secondary" style="width: 100%; font-size: 14px; padding: 12px; margin-bottom: 12px;">
+                <i class="fa-solid fa-book-open"></i> RÈGLES DU JEU
+            </button>
+            <button onclick="showAdmin()" style="background: none; border: none; color: #94A3B8; font-size: 12px; padding: 8px; cursor: pointer;">
+                <i class="fa-solid fa-gear"></i> PARAMÈTRES ADMIN
+            </button>
+        </div>
+    </div>
+
+    <!-- RULES MODAL -->
+    <div id="modal-rules" class="hidden" style="position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); opacity: 0; transition: opacity 0.3s; pointer-events: none;">
+        <div style="background: white; width: 90%; max-width: 360px; border-radius: 24px; padding: 24px; box-shadow: 0 25px 50px rgba(0,0,0,0.25);">
+            <h3 style="font-size: 20px; font-weight: 700; color: #1E293B; margin-bottom: 16px;">
+                <i class="fa-solid fa-circle-info" style="color: #4F46E5; margin-right: 8px;"></i> Règles
+            </h3>
+            <div id="display-rules" style="font-size: 14px; color: #475569; max-height: 240px; overflow-y: auto; margin-bottom: 16px; white-space: pre-wrap;">1. Chaque joueur dispose de 20 casiers et 16 cubes numérotés.
+2. Glissez les cubes vers les casiers correspondants (1 à 16).
+3. Les cubes mal placés s'affichent en rouge.
+4. Le premier à ranger tous ses numéros correctement gagne la partie !</div>
+            <button onclick="toggleRulesModal(false)" class="btn-primary" style="width: 100%;">FERMER</button>
+        </div>
+    </div>
+
+    <!-- PLAYER SETUP SCREEN -->
+    <div id="screen-player-setup" class="overlay-screen hidden-anim">
+        <div style="width: 100%; max-width: 450px; margin: auto; padding: 24px;">
+            <h2 style="font-size: 24px; font-weight: 700; text-align: center; margin-bottom: 24px;">Configuration</h2>
+            
+            <div style="margin-bottom: 24px;">
+                <label style="display: block; font-size: 14px; font-weight: 700; color: #64748B; margin-bottom: 8px;">Joueur 1</label>
+                <input type="text" id="p1-name" class="input-field" placeholder="Nom et Prénom">
+                <input type="text" id="p1-pseudo" class="input-field" placeholder="Pseudonyme">
+            </div>
+
+            <div id="p2-setup-section" style="margin-bottom: 24px;">
+                <label style="display: block; font-size: 14px; font-weight: 700; color: #64748B; margin-bottom: 8px;">Joueur 2</label>
+                <input type="text" id="p2-name" class="input-field" placeholder="Nom et Prénom">
+                <input type="text" id="p2-pseudo" class="input-field" placeholder="Pseudonyme">
+            </div>
+
+            <div style="margin-bottom: 24px;">
+                <label style="display: block; font-size: 14px; font-weight: 700; color: #64748B; margin-bottom: 8px;">Mode de Jeu</label>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                    <button onclick="setMode('solo')" id="mode-solo" class="mode-btn btn-secondary" style="font-size: 12px;">Solo</button>
+                    <button onclick="setMode('multi')" id="mode-multi" class="mode-btn btn-primary" style="font-size: 12px;">2 Joueurs</button>
+                    <button onclick="setMode('ai')" id="mode-ai" class="mode-btn btn-secondary" style="font-size: 12px;">Ordinateur</button>
+                </div>
+            </div>
+
+            <button onclick="startGame()" class="btn-primary" style="width: 100%; margin-bottom: 12px;">COMMENCER LA PARTIE</button>
+            <button onclick="hidePlayerSetup()" class="btn-secondary" style="width: 100%;">RETOUR</button>
+        </div>
+    </div>
+
+    <!-- ADMIN SCREEN -->
+    <div id="screen-admin" class="overlay-screen hidden-anim">
+        <div style="width: 100%; max-width: 450px; margin: auto; padding: 24px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 32px;">
+                <h2 style="font-size: 24px; font-weight: 700; color: #1E293B;">Paramètres Admin</h2>
+                <button onclick="hideAdmin()" style="background: none; border: none; font-size: 20px; color: #94A3B8; cursor: pointer; padding: 8px;">✕</button>
+            </div>
+
+            <div style="margin-bottom: 24px; background: white; padding: 16px; border-radius: 12px; border: 1px solid #E2E8F0;">
+                <label style="display: block; font-size: 10px; font-weight: 700; color: #94A3B8; text-transform: uppercase; margin-bottom: 8px;">Accès Administrateur</label>
+                <input type="number" id="admin-access-code" class="input-field" placeholder="Code à 6 chiffres" maxlength="6">
+                <input type="text" id="admin-security-q-input" class="input-field" placeholder="Question de Sécurité">
+                <input type="text" id="admin-security-a-input" class="input-field" placeholder="Réponse attendue">
+            </div>
+
+            <div style="margin-bottom: 24px; background: white; padding: 16px; border-radius: 12px; border: 1px solid #E2E8F0;">
+                <label style="display: block; font-size: 10px; font-weight: 700; color: #94A3B8; text-transform: uppercase; margin-bottom: 8px;">Configuration Accueil</label>
+                <input type="text" id="input-game-title" class="input-field" placeholder="Nom du jeu">
+                <input type="text" id="input-game-subtitle" class="input-field" placeholder="Sous-titre">
+                <input type="text" id="input-created-by" class="input-field" placeholder="Créé par">
+            </div>
+
+            <div style="margin-bottom: 24px; background: white; padding: 16px; border-radius: 12px; border: 1px solid #E2E8F0;">
+                <label style="display: block; font-size: 10px; font-weight: 700; color: #94A3B8; text-transform: uppercase; margin-bottom: 8px;">Règles du Jeu</label>
+                <textarea id="input-rules" class="input-field" style="height: 120px; resize: vertical;" placeholder="Éditez les règles ici..."></textarea>
+            </div>
+
+            <button onclick="saveAdminSettings()" class="btn-primary" style="width: 100%; margin-bottom: 12px;">Enregistrer</button>
+            <button onclick="hideAdmin()" class="btn-secondary" style="width: 100%;">Fermer</button>
+        </div>
+    </div>
+
+    <!-- WIN OVERLAY -->
+    <div id="screen-win" class="hidden" style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); opacity: 0; transition: opacity 0.3s; pointer-events: none;">
+        <div id="win-card" style="background: white; border-radius: 24px; padding: 32px; box-shadow: 0 25px 50px rgba(0,0,0,0.25); text-align: center; max-width: 360px; width: 90%;">
+            <div style="font-size: 48px; margin-bottom: 16px; color: #FBBF24;">👑</div>
+            <h2 id="win-title" style="font-size: 24px; font-weight: 900; color: #1E293B; margin-bottom: 8px;">Le jeu est terminé</h2>
+            <p style="color: #64748B; margin-bottom: 24px;">Voulez-vous recommencer ?</p>
+            
+            <div style="background: #F1F5F9; padding: 16px; border-radius: 12px; margin-bottom: 24px; border: 1px solid #E2E8F0;">
+                <div id="win-score-display" style="font-size: 32px; font-weight: 800; color: #4F46E5; margin-bottom: 4px;">0:42</div>
+                <div style="font-size: 11px; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em;">Temps écoulé</div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <button onclick="resetGame()" class="btn-primary" style="padding: 16px;">OUI</button>
+                <button onclick="backToMenu()" class="btn-secondary" style="padding: 16px;">NON</button>
+            </div>
+        </div>
+    </div>
 
     <script>
-    // Register service worker for offline capability
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').then(function(reg) {
-        console.log('Service Worker registered', reg);
-      }).catch(function(err) { console.warn('Service Worker registration failed', err); });
-    }
+        const TOTAL_SLOTS = 20;
+        const WIN_COUNT = 16;
+        const CUBES = 16;
 
-    // beforeinstallprompt handling for custom install UI
-    var deferredPrompt;
-    window.addEventListener('beforeinstallprompt', function(e) {
-      e.preventDefault();
-      deferredPrompt = e;
-      // You can show a custom install button in your UI and call deferredPrompt.prompt() when clicked
-    });
+        let activeDrags = new Map();
+
+        window.appState = {
+            config: { dragSpeed: 0.1 },
+            game: {
+                mode: 'multi',
+                isPlaying: false,
+                startTime: 0,
+                lastCorrectMoveTime: 0,
+                p1: { pseudo: 'Joueur 1', board: Array(20).fill(null), cubes: [], drawPile: [], activeCube: null, scoreCount: 0 },
+                p2: { pseudo: 'Joueur 2', board: Array(20).fill(null), cubes: [], drawPile: [], activeCube: null, scoreCount: 0 }
+            },
+            admin: { code: '123456', securityQuestion: 'Quel est votre pseudonyme ?', securityAnswer: 'Admin' }
+        };
+
+        function initApp() {
+            createGrid('p1-grid', 'p1');
+            createGrid('p2-grid', 'p2');
+            initBGM();
+        }
+
+        function createGrid(containerId, playerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            for(let i = 0; i < TOTAL_SLOTS; i++) {
+                const slot = document.createElement('div');
+                slot.className = 'slot';
+                slot.dataset.index = i;
+                slot.dataset.player = playerId;
+                if(i < WIN_COUNT) {
+                    slot.textContent = i + 1;
+                    slot.style.color = '#CBD5E1';
+                } else {
+                    slot.classList.add('buffer-slot');
+                }
+                container.appendChild(slot);
+            }
+        }
+
+        function showPlayerSetup() {
+            document.getElementById('screen-player-setup').classList.remove('hidden-anim');
+        }
+
+        function hidePlayerSetup() {
+            document.getElementById('screen-player-setup').classList.add('hidden-anim');
+        }
+
+        function setMode(mode) {
+            window.appState.game.mode = mode;
+            document.querySelectorAll('.mode-btn').forEach(b => {
+                b.classList.remove('btn-primary');
+                b.classList.add('btn-secondary');
+            });
+            document.getElementById('mode-' + mode).classList.remove('btn-secondary');
+            document.getElementById('mode-' + mode).classList.add('btn-primary');
+            
+            const p2Section = document.getElementById('p2-setup-section');
+            if (mode === 'solo' || mode === 'ai') p2Section.style.display = 'none';
+            else p2Section.style.display = 'block';
+        }
+
+        function startGame() {
+            const p1PseudoInput = document.getElementById('p1-pseudo').value;
+            const p1Name = document.getElementById('p1-name').value;
+            const p1Pseudo = p1PseudoInput || p1Name || 'Joueur 1';
+
+            const p2PseudoInput = document.getElementById('p2-pseudo').value;
+            const p2Name = document.getElementById('p2-name').value;
+            let p2Pseudo = p2PseudoInput || p2Name || 'Joueur 2';
+            if (window.appState.game.mode === 'ai') p2Pseudo = "Ordinateur";
+            
+            window.appState.game.p1.pseudo = p1Pseudo;
+            window.appState.game.p2.pseudo = p2Pseudo;
+            
+            document.getElementById('p1-pseudo-display').textContent = p1Pseudo;
+            document.getElementById('p2-pseudo-display').textContent = p2Pseudo;
+
+            document.getElementById('screen-start').classList.add('hidden-anim');
+            document.getElementById('screen-player-setup').classList.add('hidden-anim');
+            
+            window.appState.game.isPlaying = true;
+            window.appState.game.startTime = Date.now();
+            window.appState.game.lastCorrectMoveTime = Date.now();
+            window.appState.game.p1.board.fill(null);
+            window.appState.game.p2.board.fill(null);
+
+            spawnCubes('p1-zone', 'p1');
+            
+            const p2Zone = document.getElementById('p2-zone');
+            if (window.appState.game.mode === 'solo') {
+                p2Zone.style.display = 'none';
+                document.querySelector('.game-divider').style.display = 'none';
+            } else {
+                p2Zone.style.display = 'flex';
+                document.querySelector('.game-divider').style.display = 'block';
+                spawnCubes('p2-zone', 'p2');
+            }
+            
+            const winScreen = document.getElementById('screen-win');
+            winScreen.classList.add('hidden');
+            winScreen.style.opacity = '0';
+        }
+
+        function spawnCubes(zoneId, playerId) {
+            const zone = document.getElementById(zoneId);
+            const existing = zone.querySelectorAll('.cube');
+            existing.forEach(e => e.remove());
+
+            window.appState.game[playerId].board.fill(null);
+            window.appState.game[playerId].activeCube = null;
+            window.appState.game[playerId].scoreCount = 0;
+            
+            const numbers = Array.from({length: 16}, (_, i) => i + 1);
+            window.appState.game[playerId].drawPile = numbers.sort(() => Math.random() - 0.5);
+            
+            const grid = document.getElementById(playerId + '-grid');
+            if (grid) Array.from(grid.children).forEach(s => s.classList.remove('completed'));
+
+            updateDeckUI(playerId);
+            drawNextCube(playerId);
+        }
+
+        function updateDeckUI(playerId) {
+            const countEl = document.getElementById(playerId + '-deck-count');
+            if (countEl) countEl.textContent = window.appState.game[playerId].drawPile.length;
+            const scoreEl = document.getElementById(playerId + '-score-count');
+            if (scoreEl) scoreEl.textContent = window.appState.game[playerId].scoreCount;
+        }
+
+        function drawNextCube(playerId) {
+            const pile = window.appState.game[playerId].drawPile;
+            if (pile.length === 0) return;
+            
+            const num = pile.pop();
+            const cube = createCube(num, playerId);
+            cube.dataset.isFromPile = "true";
+            window.appState.game[playerId].activeCube = cube;
+            
+            const pileContainer = document.getElementById(playerId + '-draw-pile');
+            const left = pileContainer.offsetLeft;
+            const top = pileContainer.offsetTop;
+            
+            cube.style.width = (pileContainer.offsetWidth - 4) + 'px';
+            cube.style.height = (pileContainer.offsetHeight - 4) + 'px';
+            
+            requestAnimationFrame(() => {
+                cube.style.transform = `translate(${left + 2}px, ${top + 2}px)`;
+            });
+            
+            updateDeckUI(playerId);
+        }
+
+        function createCube(number, playerId) {
+            const cube = document.createElement('div');
+            cube.className = 'cube';
+            cube.textContent = number;
+            cube.dataset.number = number;
+            cube.dataset.player = playerId;
+            cube.dataset.currentSlot = -1;
+            
+            cube.addEventListener('pointerdown', onPointerDown);
+            document.getElementById(playerId + '-zone').appendChild(cube);
+            return cube;
+        }
+
+        function getSlotRect(slotIndex, playerId) {
+            const grid = document.getElementById(playerId + '-grid');
+            const slot = grid.children[slotIndex];
+            const zone = document.getElementById(playerId + '-zone');
+            
+            return {
+                left: slot.offsetLeft + grid.offsetLeft,
+                top: slot.offsetTop + grid.offsetTop,
+                width: slot.offsetWidth,
+                height: slot.offsetHeight,
+                el: slot
+            };
+        }
+
+        function placeCubeInSlot(cube, slotIndex, playerId) {
+            const rect = getSlotRect(slotIndex, playerId);
+            const cubeW = rect.width;
+            const cubeH = rect.height;
+            const offsetX = rect.left;
+            const offsetY = rect.top;
+            
+            cube.style.width = cubeW + 'px';
+            cube.style.height = cubeH + 'px';
+            
+            requestAnimationFrame(() => {
+                cube.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+            });
+            
+            window.appState.game[playerId].board[slotIndex] = parseInt(cube.dataset.number);
+            cube.dataset.currentSlot = slotIndex;
+            
+            validateCube(cube, slotIndex);
+        }
+
+        function validateCube(cube, slotIndex) {
+            const num = parseInt(cube.dataset.number);
+            const targetNum = slotIndex + 1;
+            const player = cube.dataset.player;
+            
+            if (slotIndex < WIN_COUNT) {
+                if (num === targetNum) {
+                    cube.classList.add('correct');
+                    cube.classList.remove('wrong');
+                    handleScoreStacking(cube, player, slotIndex);
+                    checkWin(player);
+                } else {
+                    cube.classList.add('wrong');
+                    cube.classList.remove('correct');
+                    playSfx('wrong');
+                }
+            } else {
+                cube.classList.remove('correct', 'wrong');
+            }
+        }
+
+        function handleScoreStacking(cube, playerId, slotIndex) {
+            const scorePile = document.getElementById(playerId + '-score-pile');
+            const gridSlot = document.getElementById(playerId + '-grid').children[slotIndex];
+            
+            gridSlot.classList.add('completed');
+            cube.classList.add('stacking');
+            
+            const destX = scorePile.offsetLeft + 2;
+            const destY = scorePile.offsetTop + 2;
+            
+            cube.style.transform = `translate(${destX}px, ${destY}px) scale(0.6)`;
+            cube.style.opacity = '0';
+            
+            window.appState.game[playerId].scoreCount++;
+            updateDeckUI(playerId);
+            
+            setTimeout(() => {
+                cube.remove();
+            }, 600);
+        }
+
+        function checkWin(playerId) {
+            const won = window.appState.game[playerId].scoreCount === WIN_COUNT;
+            if (won && window.appState.game.isPlaying) {
+                gameWin(playerId);
+            } else {
+                playSfx('place');
+            }
+        }
+
+        function gameWin(playerId) {
+            window.appState.game.isPlaying = false;
+            playSfx('win');
+            
+            try { confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } }); } catch(e) {}
+            
+            const duration = Math.floor((Date.now() - window.appState.game.startTime) / 1000);
+            const mins = Math.floor(duration / 60);
+            const secs = duration % 60;
+            const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+            
+            const overlay = document.getElementById('screen-win');
+            const card = document.getElementById('win-card');
+            const title = document.getElementById('win-title');
+            
+            document.getElementById('win-score-display').textContent = timeStr;
+            const winnerPseudo = window.appState.game[playerId].pseudo;
+            title.textContent = (winnerPseudo === "Ordinateur" ? "L'ORDINATEUR" : winnerPseudo.toUpperCase()) + " A GAGNÉ !";
+            title.style.color = playerId === 'p1' ? '#4F46E5' : '#E11D48';
+            
+            if (playerId === 'p2') {
+                card.style.transform = 'rotate(180deg)';
+            } else {
+                card.style.transform = 'rotate(0deg)';
+            }
+            
+            overlay.classList.remove('hidden');
+            overlay.style.pointerEvents = 'auto';
+            overlay.style.display = 'flex';
+            void overlay.offsetWidth;
+            overlay.style.opacity = '1';
+        }
+        
+        function onPointerDown(e) {
+            if (!window.appState.game.isPlaying) return;
+            e.preventDefault();
+            
+            const cube = e.currentTarget;
+            cube.setPointerCapture(e.pointerId);
+            cube.classList.add('dragging');
+            
+            const style = window.getComputedStyle(cube);
+            const matrix = new WebKitCSSMatrix(style.transform);
+            
+            activeDrags.set(e.pointerId, {
+                element: cube,
+                startX: e.clientX,
+                startY: e.clientY,
+                initialX: matrix.m41,
+                initialY: matrix.m42,
+                playerId: cube.dataset.player
+            });
+            
+            playSfx('place');
+            
+            cube.addEventListener('pointermove', onPointerMove);
+            cube.addEventListener('pointerup', onPointerUp);
+            cube.addEventListener('pointercancel', onPointerUp);
+        }
+
+        function onPointerMove(e) {
+            if (!activeDrags.has(e.pointerId)) return;
+            
+            const drag = activeDrags.get(e.pointerId);
+            const dx = e.clientX - drag.startX;
+            const dy = e.clientY - drag.startY;
+            
+            let moveX = drag.initialX + dx;
+            let moveY = drag.initialY + dy;
+            
+            if (drag.playerId === 'p2') {
+                moveX = drag.initialX - dx;
+                moveY = drag.initialY - dy;
+            }
+            
+            drag.element.style.transform = `translate(${moveX}px, ${moveY}px)`;
+        }
+
+        function onPointerUp(e) {
+            if (!activeDrags.has(e.pointerId)) return;
+            
+            const drag = activeDrags.get(e.pointerId);
+            const cube = drag.element;
+            const playerId = drag.playerId;
+            
+            cube.releasePointerCapture(e.pointerId);
+            cube.classList.remove('dragging');
+            cube.removeEventListener('pointermove', onPointerMove);
+            cube.removeEventListener('pointerup', onPointerUp);
+            cube.removeEventListener('pointercancel', onPointerUp);
+            
+            activeDrags.delete(e.pointerId);
+            
+            const dropX = e.clientX;
+            const dropY = e.clientY;
+            
+            const grid = document.getElementById(playerId + '-grid');
+            const slots = Array.from(grid.children);
+            
+            let bestSlot = null;
+            let minDist = Infinity;
+            
+            slots.forEach(slot => {
+                const r = slot.getBoundingClientRect();
+                const slotCX = r.left + r.width/2;
+                const slotCY = r.top + r.height/2;
+                const d = Math.hypot(dropX - slotCX, dropY - slotCY);
+                if (d < r.width * 1.5 && d < minDist) {
+                    minDist = d;
+                    bestSlot = slot;
+                }
+            });
+            
+            const oldSlotIndex = parseInt(cube.dataset.currentSlot);
+            const wasInPile = cube.dataset.isFromPile === "true";
+            
+            if (bestSlot) {
+                const newSlotIndex = parseInt(bestSlot.dataset.index);
+                const board = window.appState.game[playerId].board;
+                const occupantNumber = board[newSlotIndex];
+                
+                if (occupantNumber && occupantNumber !== parseInt(cube.dataset.number)) {
+                    const zone = document.getElementById(playerId + '-zone');
+                    const allCubes = zone.querySelectorAll('.cube');
+                    let otherCube = Array.from(allCubes).find(c => parseInt(c.dataset.currentSlot) === newSlotIndex);
+                    
+                    if (otherCube) {
+                        if (wasInPile) {
+                            const pc = document.getElementById(playerId + '-draw-pile');
+                            otherCube.data.isFromPile = "true";
+                            otherCube.style.transform = `translate(${pc.offsetLeft + 2}px, ${pc.offsetTop + 2}px)`;
+                            otherCube.classList.remove('correct', 'wrong');
+                            window.appState.game[playerId].activeCube = otherCube;
+                            delete cube.dataset.isFromPile;
+                            placeCubeInSlot(cube, newSlotIndex, playerId);
+                        } else {
+                            placeCubeInSlot(otherCube, oldSlotIndex, playerId);
+                            placeCubeInSlot(cube, newSlotIndex, playerId);
+                        }
+                    }
+                } else {
+                    if (!wasInPile) board[oldSlotIndex] = null;
+                    placeCubeInSlot(cube, newSlotIndex, playerId);
+                    if (wasInPile) {
+                        delete cube.dataset.isFromPile;
+                        window.appState.game[playerId].activeCube = null;
+                        drawNextCube(playerId);
+                    }
+                }
+            } else {
+                if (wasInPile) {
+                    const pc = document.getElementById(playerId + '-draw-pile');
+                    cube.style.transform = `translate(${pc.offsetLeft + 2}px, ${pc.offsetTop + 2}px)`;
+                } else if (oldSlotIndex >= 0) {
+                    placeCubeInSlot(cube, oldSlotIndex, playerId);
+                }
+            }
+        }
+
+        function toggleRulesModal(show) {
+            const modal = document.getElementById('modal-rules');
+            if (show) {
+                modal.classList.remove('hidden');
+                modal.style.pointerEvents = 'auto';
+                void modal.offsetWidth;
+                modal.style.opacity = '1';
+            } else {
+                modal.style.opacity = '0';
+                modal.style.pointerEvents = 'none';
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
+
+        function showAdmin() {
+            document.getElementById('screen-admin').classList.remove('hidden-anim');
+        }
+        
+        function hideAdmin() {
+            const el = document.getElementById('screen-admin');
+            el.classList.add('hidden-anim');
+        }
+
+        function saveAdminSettings() {
+            const title = document.getElementById('input-game-title').value;
+            const subtitle = document.getElementById('input-game-subtitle').value;
+            const createdBy = document.getElementById('input-created-by').value;
+            const rules = document.getElementById('input-rules').value;
+
+            document.getElementById('app-title').textContent = title;
+            document.getElementById('app-subtitle').textContent = subtitle;
+            document.getElementById('app-created-by').textContent = createdBy;
+            document.getElementById('display-rules').textContent = rules;
+            
+            const btn = document.querySelector('#screen-admin .btn-primary');
+            const originalText = btn.textContent;
+            btn.textContent = 'Enregistré !';
+            setTimeout(() => {
+                btn.textContent = originalText;
+                hideAdmin();
+            }, 800);
+        }
+
+        function handleMusicFile(input) {
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const bgm = document.getElementById('music-bgm');
+                    bgm.src = e.target.result;
+                    bgm.load();
+                }
+                reader.readAsDataURL(input.files[0]);
+            }
+        }
+        
+        function resetGame() {
+            const overlay = document.getElementById('screen-win');
+            overlay.style.opacity = '0';
+            setTimeout(() => {
+                overlay.classList.add('hidden');
+                startGame();
+            }, 300);
+        }
+
+        function backToMenu() {
+            window.appState.game.isPlaying = false;
+            const overlay = document.getElementById('screen-win');
+            overlay.style.opacity = '0';
+            setTimeout(() => {
+                overlay.classList.add('hidden');
+                document.getElementById('screen-start').classList.remove('hidden-anim');
+            }, 300);
+        }
+
+        function playSfx(id) {
+            const el = document.getElementById('sfx-' + id);
+            if(el) { el.currentTime = 0; el.play().catch(()=>{}); }
+        }
+
+        function initBGM() {
+            const el = document.getElementById('music-bgm');
+            if (!el?.src) return;
+            el.loop = true;
+            el.volume = 0.3;
+            const play = () => el.play().catch(() => {
+                document.addEventListener('touchstart', play, { once: true });
+                document.addEventListener('click', play, { once: true });
+            });
+            play();
+        }
+
+        document.addEventListener('DOMContentLoaded', initApp);
     </script>
 
-    <style>
-        /* Base & Reset */
-        :root {
-            --p1-color: #4F46E5;
-            --p1-cube-bg: #FFFFFF;
-            --p2-color: #E11D48;
-            --p2-cube-bg: #FFFFFF;
-            --slot-bg: #F1F5F9;
-            --slot-border: #CBD5E1;
-            --correct: #22C55E;
-            --incorrect: #EF4444;
-            --divider-color: #CBD5E1;
-        }
-        
-        * {
-            touch-action: none; /* Prevent browser scrolling/zooming */
-            user-select: none;
-            -webkit-user-select: none;
-            box-sizing: border-box;
-        }
-
-        html, body {
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: #F8FAFC;
-        }
-
-        /* Utilities */
-        .hidden { display: none !important; }
-        .flex-center { display: flex; align-items: center; justify-content: center; }
-        
-        /* Layer Architecture */
-        #layer-bg { z-index: 0; position: absolute; inset: 0; pointer-events: none; }
-        #layer-ui { z-index: 10; position: absolute; inset: 0; display: flex; flex-direction: column; }
-        #layer-overlay { z-index: 50; position: absolute; inset: 0; pointer-events: none; }
-        
-        /* Game Board */
-        .player-zone {
-            flex: 1;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            padding: 15px;
-            overflow: hidden;
-        }
-
-        .game-divider {
-            height: 8px;
-            background: var(--divider-color);
-            width: 100%;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
-        }
-
-        .player-zone.inverted {
-            transform: rotate(180deg);
-        }
-
-        .pseudo-label {
-            position: absolute;
-            top: 5px;
-            right: 15px;
-            font-size: 12px;
-            font-weight: bold;
-            color: #64748b;
-            background: rgba(255,255,255,0.8);
-            padding: 2px 8px;
-            border-radius: 4px;
-            z-index: 5;
-        }
-
-        /* Grid */
-        .grid-container {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            grid-template-rows: repeat(5, 1fr);
-            gap: 4px;
-            width: 90%;
-            max-width: 280px; /* Noticeably Medium size */
-            aspect-ratio: 4 / 5;
-            margin: auto;
-            padding: 8px;
-            background: #E2E8F0;
-            border-radius: 16px;
-        }
-
-        /* Slots */
-        .slot {
-            position: relative;
-            background: var(--slot-bg);
-            border: 2px solid #CBD5E1;
-            border-radius: 10px;
-            display: flex;
-            align-items: flex-start; /* For labels at top */
-            justify-content: center;
-            font-size: 10px;
-            color: #94A3B8;
-            font-weight: bold;
-            transition: all 0.2s;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
-            padding-top: 4px;
-        }
-
-        .buffer-slot {
-            opacity: 0.4;
-            background: #F8FAFC;
-        }
-        
-        /* Cubes (Phone Keypad Style) */
-        .cube {
-            position: absolute;
-            width: 100%;
-            height: 100%;
-            background: #FFFFFF;
-            border-radius: 8px; /* Slightly sharper to fit slots better */
-            /* Deep shadow for 'raised button' look */
-            box-shadow: 0 3px 0 #CBD5E1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: 800;
-            color: #1E293B;
-            border: 1px solid #E2E8F0;
-            touch-action: none;
-            z-index: 20;
-            transform-origin: center center;
-            transition: transform 0.1s, box-shadow 0.1s;
-        }
-
-        .cube[data-player="p2"] {
-            background: var(--p2-cube-bg);
-        }
-
-        @keyframes congrats-pop {
-            0% { transform: scale(0.5) translateY(0); opacity: 0; }
-            50% { transform: scale(1.2) translateY(-20px); opacity: 1; }
-            100% { transform: scale(1) translateY(-30px); opacity: 0; }
-        }
-
-        .congrats-text {
-            position: absolute;
-            color: #22C55E;
-            font-weight: 900;
-            font-size: 14px;
-            pointer-events: none;
-            z-index: 100;
-            animation: congrats-pop 0.8s ease-out forwards;
-        }
-
-        .cube:active, .cube.dragging {
-            z-index: 100 !important;
-            transform: scale(1.1);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            opacity: 0.9;
-        }
-
-        .cube.correct {
-            background-color: #DCFCE7;
-            border-color: var(--correct);
-            color: var(--correct);
-        }
-
-        .cube.wrong {
-            background-color: #FEE2E2;
-            border-color: var(--incorrect);
-            color: var(--incorrect);
-        }
-
-        /* UI Components */
-        .btn-primary {
-            background: #4F46E5;
-            color: white;
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 600;
-            box-shadow: 0 4px 6px rgba(79, 70, 229, 0.3);
-            transition: transform 0.1s;
-        }
-        .btn-primary:active { transform: scale(0.96); }
-
-        .btn-secondary {
-            background: white;
-            color: #475569;
-            padding: 10px 20px;
-            border-radius: 12px;
-            font-weight: 600;
-            border: 1px solid #E2E8F0;
-            transition: transform 0.1s;
-        }
-        .btn-secondary:active { transform: scale(0.96); }
-
-        /* Overlays */
-        .overlay-screen {
-            position: absolute;
-            inset: 0;
-            background: #F8FAFC;
-            z-index: 100;
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-            pointer-events: auto;
-            transition: opacity 0.3s;
-        }
-
-        /* Enable scrolling for admin screen despite global touch-action: none */
-        #screen-admin, #screen-admin * {
-            touch-action: pan-y !important;
-        }
-        
-        .overlay-screen.hidden-anim {
-            visibility: hidden;
-            opacity: 0;
-            pointer-events: none;
-        }
-
-        /* Form Inputs */
-        .input-field {
-            width: 100%;
-            padding: 12px;
-            border: 1px solid #CBD5E1;
-            border-radius: 8px;
-            font-size: 16px; /* iOS zoom prevention */
-            margin-bottom: 12px;
-            background: white;
-        }
-
-        /* Pile Styling (Draw & Score) */
-        .draw-pile-container, .score-pile-container {
-            position: absolute;
-            bottom: 15px;
-            width: 54px;
-            height: 54px;
-            border: 2px dashed #94A3B8;
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 5;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
-        }
-
-        .draw-pile-container {
-            left: 15px;
-            background: #E2E8F0;
-        }
-
-        .score-pile-container {
-            right: 65px; /* Shifted to avoid overlap with Shuffle/Restart buttons */
-            background: #DCFCE7;
-            border-color: #22C55E;
-        }
-        
-        .pile-label {
-            font-size: 8px;
-            font-weight: 800;
-            text-align: center;
-            text-transform: uppercase;
-            line-height: 1;
-            pointer-events: none;
-        }
-        
-        .draw-pile-label { color: #64748B; }
-        .score-pile-label { color: #166534; }
-
-        .deck-counter, .score-counter {
-            position: absolute;
-            top: -8px;
-            right: -8px;
-            color: white;
-            font-size: 9px;
-            padding: 2px 5px;
-            border-radius: 10px;
-            font-weight: bold;
-            z-index: 10;
-        }
-        
-        .deck-counter { background: #475569; }
-        .score-counter { background: #166534; }
-
-        /* Animation for stacking to score pile */
-        .cube.stacking {
-            transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.6s;
-            pointer-events: none;
-            z-index: 100 !important;
-        }
-
-        .slot.completed {
-            background: #DCFCE7 !important;
-            border-color: #22C55E !important;
-            color: #22C55E !important;
-            box-shadow: none !important;
-        }
-
-    </style>
-<style>*, ::before, ::after{--tw-border-spacing-x:0;--tw-border-spacing-y:0;--tw-translate-x:0;--tw-translate-y:0;--tw-rotate:0;--tw-skew-x:0;--tw-skew-y:0;--tw-scale-x:1;--tw-scale-y:1;--tw-pan-...[t...]
-</head>
-<body>
-<!-- The rest of the original HTML continues unchanged -->
+</body></html>
